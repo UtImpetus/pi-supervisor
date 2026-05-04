@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { SupervisorState, SupervisorIntervention, Sensitivity } from "./types.js";
+import type { Sensitivity, SupervisorIntervention, SupervisorState } from "./types.js";
 
 const ENTRY_TYPE = "supervisor-state";
 

@@ -4,9 +4,9 @@
  * sees when pressing Ctrl+P in pi, with search and API-key availability.
  */
 
-import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { Model } from "@mariozechner/pi-ai";
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
 
 /**
  * Open the interactive model picker.

@@ -50,7 +50,7 @@ export function updateUI(
   state: SupervisorState | null,
   action: WidgetAction = { type: "watching" }
 ): void {
-  if (!state || !state.active) {
+  if (!state?.active) {
     ctx.ui.setStatus(STATUS_ID, undefined);
     ctx.ui.setWidget(WIDGET_ID, undefined);
     return;

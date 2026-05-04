@@ -11,14 +11,14 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { SupervisorStateManager, DEFAULT_PROVIDER, DEFAULT_MODEL_ID, DEFAULT_SENSITIVITY } from "./state.js";
+import { Type } from "typebox";
 import { analyze, loadSystemPrompt } from "./engine.js";
-import { updateUI, toggleWidget, isWidgetVisible, type WidgetAction } from "./ui/status-widget.js";
+import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
+import type { Sensitivity, SteeringDecision } from "./types.js";
 import { pickModel } from "./ui/model-picker.js";
 import { openSettings } from "./ui/settings-panel.js";
+import { isWidgetVisible, toggleWidget, updateUI } from "./ui/status-widget.js";
 import { loadWorkspaceModel, saveWorkspaceModel } from "./workspace-config.js";
-import type { Sensitivity } from "./types.js";
-import { Type } from "typebox";
 
 /**
  * Extract partial reasoning text from the supervisor's streaming JSON response.
@@ -43,13 +43,11 @@ const MAX_IDLE_STEERS = 5;
 
 export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
-  let currentCtx: ExtensionContext | undefined;
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
 
   // ---- Session lifecycle: restore state ----
 
   const onSessionLoad = (ctx: ExtensionContext) => {
-    currentCtx = ctx;
     state.loadFromSession(ctx);
     updateUI(ctx, state.getState());
   };
@@ -59,12 +57,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_fork", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
 
-  // ---- Keep ctx fresh ----
-
-  pi.on("turn_start", async (_event, ctx) => {
-    currentCtx = ctx;
-  });
-
   // ---- Mid-turn steering: medium and high sensitivity ----
   // turn_end fires after each LLM sub-turn (tool-call cycle) while the agent is still running.
   // low:    no mid-run checks at all
@@ -72,7 +64,6 @@ export default function (pi: ExtensionAPI) {
   // high:   check every tool cycle from turn 2, confidence >= 0.85
 
   pi.on("turn_end", async (event, ctx) => {
-    currentCtx = ctx;
     if (!state.isActive()) return;
     const s = state.getState()!;
 
@@ -80,7 +71,7 @@ export default function (pi: ExtensionAPI) {
     if (event.turnIndex < 2) return; // let the agent settle before intervening
     if (s.sensitivity === "medium" && (event.turnIndex - 2) % 3 !== 0) return;
 
-    let decision;
+    let decision: SteeringDecision;
     try {
       decision = await analyze(ctx, s, false /* agent still working */, false /* can't stagnate mid-turn */);
     } catch {
@@ -106,7 +97,6 @@ export default function (pi: ExtensionAPI) {
   // This is the critical checkpoint for all sensitivity levels.
 
   pi.on("agent_end", async (_event, ctx) => {
-    currentCtx = ctx;
     if (!state.isActive()) return;
 
     state.incrementTurnCount();
@@ -149,7 +139,6 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("supervise", {
     description: "Supervise the chat toward a desired outcome (/supervise <outcome>)",
     handler: async (args, ctx) => {
-      currentCtx = ctx;
       const trimmed = args?.trim() ?? "";
 
       // --- subcommands ---
@@ -403,7 +392,6 @@ export default function (pi: ExtensionAPI) {
 
       state.start(params.outcome, provider, modelId, sensitivity);
       idleSteers = 0;
-      currentCtx = ctx;
       updateUI(ctx, state.getState());
 
       const { source } = loadSystemPrompt(ctx.cwd);

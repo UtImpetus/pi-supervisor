@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-05-04
+
+No user-facing behavior changes. Infrastructure-only release.
+
+### Changed
+- Migrated `@sinclair/typebox@latest` → `typebox@^1.1.24` and pinned to a stable major (was previously `latest`, which would silently pull breaking changes on install)
+
+### Added
+- CI pipeline (`.github/workflows/ci.yml`) running lint, typecheck, and tests on push/PR to `master`
+- Biome linter config (`biome.json`)
+- Vitest test suite (`test/`) — 38 tests covering pure helpers in `model-client`, `engine`, `state`, and `workspace-config`
+- npm scripts: `build`, `test`, `test:watch`, `typecheck`, `lint`, `lint:fix`, `prepublishOnly`
+
 ## [0.4.2] - 2026-03-11
 
 ### Added

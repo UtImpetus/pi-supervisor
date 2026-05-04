@@ -5,12 +5,12 @@
  * callSupervisorModel — high-level: parses response as SteeringDecision
  */
 
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { SteeringDecision } from "./types.js";
 
 /**

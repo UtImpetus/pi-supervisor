@@ -7,10 +7,10 @@
  * Opened via `/supervise` (no args) or `/supervise settings`.
  */
 
-import { SettingsList, type SettingItem, type SettingsListTheme } from "@mariozechner/pi-tui";
-import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { SupervisorState, Sensitivity } from "../types.js";
+import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
+import { type SettingItem, SettingsList, type SettingsListTheme } from "@mariozechner/pi-tui";
+import type { Sensitivity, SupervisorState } from "../types.js";
 import { isWidgetVisible } from "./status-widget.js";
 
 const SENSITIVITIES: Sensitivity[] = ["low", "medium", "high"];
