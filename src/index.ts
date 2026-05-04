@@ -52,9 +52,10 @@ export default function (pi: ExtensionAPI) {
     updateUI(ctx, state.getState());
   };
 
+  // session_start now fires for startup/reload/new/resume/fork (consolidated
+  // in pi-coding-agent 0.72.x — previously separate session_switch/session_fork
+  // events). session_tree remains a separate event for tree-view navigation.
   pi.on("session_start", async (_event, ctx) => onSessionLoad(ctx));
-  pi.on("session_switch", async (_event, ctx) => onSessionLoad(ctx));
-  pi.on("session_fork", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
 
   // ---- Mid-turn steering: medium and high sensitivity ----

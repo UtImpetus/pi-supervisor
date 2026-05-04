@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.3] - 2026-05-04
 
-No user-facing behavior changes. Infrastructure-only release.
+No user-facing behavior changes.
 
 ### Changed
+- Adapted to `@mariozechner/pi-coding-agent@0.72.x` API:
+  - `session_switch` and `session_fork` events consolidated into `session_start` (with `reason` field) — listener removed, behavior unchanged
+  - `DefaultResourceLoader` now requires `cwd`/`agentDir`; `systemPromptOverride: () => string` renamed to `systemPrompt: string`
 - Migrated `@sinclair/typebox@latest` → `typebox@^1.1.24` and pinned to a stable major (was previously `latest`, which would silently pull breaking changes on install)
 
 ### Added

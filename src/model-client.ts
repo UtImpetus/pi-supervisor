@@ -9,6 +9,7 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  getAgentDir,
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import type { SteeringDecision } from "./types.js";
@@ -29,12 +30,16 @@ export async function callModel(
   const model = ctx.modelRegistry.find(provider, modelId);
   if (!model) return null;
 
+  // pi-coding-agent 0.72.x requires cwd + agentDir on the loader and
+  // renamed `systemPromptOverride: () => string` → `systemPrompt: string`.
   const loader = new DefaultResourceLoader({
+    cwd: ctx.cwd,
+    agentDir: getAgentDir(),
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
-    systemPromptOverride: () => systemPrompt,
+    systemPrompt,
   });
   await loader.reload();
 
