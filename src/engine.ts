@@ -93,8 +93,11 @@ const MESSAGE_LIMITS: Record<string, number> = {
   high: 20,
 };
 
-/** Extract the most recent compaction or branch summary from the session branch, if any. */
-function extractCompactionSummary(ctx: ExtensionContext): string | null {
+/**
+ * Extract the most recent compaction or branch summary from the session branch.
+ * Returns null when none exist. Exported for unit tests.
+ */
+export function extractCompactionSummary(ctx: ExtensionContext): string | null {
   let summary: string | null = null;
   for (const entry of ctx.sessionManager.getBranch()) {
     if (
@@ -107,8 +110,13 @@ function extractCompactionSummary(ctx: ExtensionContext): string | null {
   return summary;
 }
 
-/** Extract recent user/assistant messages from the session branch. */
-function buildSnapshot(ctx: ExtensionContext, limit: number): ConversationMessage[] {
+/**
+ * Extract the most recent user/assistant messages from the session branch,
+ * capped at `limit`. Returns the LAST `limit` entries (chronological order
+ * preserved), so the supervisor sees freshest-first context. Exported for
+ * unit tests.
+ */
+export function buildSnapshot(ctx: ExtensionContext, limit: number): ConversationMessage[] {
   const messages: ConversationMessage[] = [];
 
   for (const entry of ctx.sessionManager.getBranch()) {

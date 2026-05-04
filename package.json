@@ -28,11 +28,22 @@
     "@mariozechner/pi-tui": ">=0.70.5"
   },
   "dependencies": {
-    "@sinclair/typebox": "latest"
+    "typebox": "^1.1.24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --fix src/ test/",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.8",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "vitest": "^4.0.18"
   },
   "pi": {
     "extensions": ["./src/index.ts"],

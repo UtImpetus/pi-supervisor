@@ -18,7 +18,7 @@ import { pickModel } from "./ui/model-picker.js";
 import { openSettings } from "./ui/settings-panel.js";
 import { loadWorkspaceModel, saveWorkspaceModel } from "./workspace-config.js";
 import type { Sensitivity } from "./types.js";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 /**
  * Extract partial reasoning text from the supervisor's streaming JSON response.

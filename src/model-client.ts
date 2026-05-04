@@ -99,7 +99,15 @@ export async function callSupervisorModel(
 
 // ---- Response parsing ----
 
-function parseDecision(text: string): SteeringDecision {
+/**
+ * Parse a supervisor LLM response into a SteeringDecision.
+ * Tolerates: bare JSON, ```json fenced blocks, JSON wrapped in prose.
+ * Falls back to {action: "continue", confidence: 0} on any parse failure or
+ * invalid action — the chat is never interrupted by a malformed response.
+ *
+ * Exported for unit tests; not part of the public extension contract.
+ */
+export function parseDecision(text: string): SteeringDecision {
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) ?? text.match(/(\{[\s\S]*\})/);
   const jsonStr = jsonMatch?.[1] ?? text.trim();
 
