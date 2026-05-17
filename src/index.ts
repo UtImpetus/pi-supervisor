@@ -348,8 +348,8 @@ export default function (pi: ExtensionAPI) {
       idleSteers = 0;
       updateUI(ctx, state.getState());
 
-      const { source } = loadSystemPrompt(ctx.cwd);
-      const promptLabel = source === "built-in" ? "built-in prompt" : source.replace(ctx.cwd, ".");
+      const { source } = loadSystemPrompt(ctx.cwd, modelId);
+      const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
       ctx.ui.notify(
         `Supervisor active: "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "…" : ""}" | ${provider}/${modelId} | ${promptLabel}`,
         "info"
@@ -432,8 +432,8 @@ export default function (pi: ExtensionAPI) {
       idleSteers = 0;
       updateUI(ctx, state.getState());
 
-      const { source } = loadSystemPrompt(ctx.cwd);
-      const promptLabel = source === "built-in" ? "built-in prompt" : ".pi/SUPERVISOR.md";
+      const { source } = loadSystemPrompt(ctx.cwd, modelId);
+      const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
 
       // Notify the user so they're aware supervision was initiated by the model
       ctx.ui.notify(

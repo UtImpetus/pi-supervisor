@@ -3,13 +3,14 @@
  *
  * Footer: 🎯 emoji badge.
  * Widget line 1: ◉ Supervising · Goal: "…"
- * Widget line 2: model · sensitivity · steers · action/status
+ * Widget line 2: model · prompt source · sensitivity · steers · action/status
  *
  * Toggle visibility with toggleWidget().
  */
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth } from "@mariozechner/pi-tui";
+import { loadSystemPrompt } from "../engine.js";
 import type { SupervisorState } from "../types.js";
 import { resolveSensitivityConfig } from "../types.js";
 
@@ -46,6 +47,19 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
+export function describePromptSource(source: string, modelId: string): string {
+  if (source.startsWith("built-in:")) {
+    return `prompt: ${source.slice("built-in:".length)}`;
+  }
+  if (source === "built-in") {
+    return "prompt: default";
+  }
+  if (source.endsWith(`${modelId}-SUPERVISOR.md`)) {
+    return "prompt: model";
+  }
+  return "prompt: generic";
+}
+
 /**
  * Update footer + widget. Call this every time state or action changes.
  * Clears both when state is null or inactive.
@@ -68,9 +82,11 @@ export function updateUI(
     return;
   }
 
+  const { source: promptSource } = loadSystemPrompt(ctx.cwd, state.modelId);
   const snap = {
     outcome: state.outcome,
     modelId: state.modelId,
+    promptLabel: describePromptSource(promptSource, state.modelId),
     sensitivity: state.sensitivity,
     sensitivityConfig: resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig),
     interventions: [...state.interventions],
@@ -88,6 +104,7 @@ export function updateUI(
     const goal      = `${goalLabel} ${goalText}`;
     // Model
     const model = theme.fg("dim", snap.modelId);
+    const prompt = theme.fg("dim", snap.promptLabel);
     // Sensitivity
     const sensitivityLabel = snap.sensitivity === "custom"
       ? `custom (⨍${snap.sensitivityConfig.checkInterval} ≥${snap.sensitivityConfig.confidenceThreshold} w${snap.sensitivityConfig.messageLimit})`
@@ -118,7 +135,7 @@ export function updateUI(
     const sep = theme.fg("dim", " · ");
     const line1 = [header, goal].join(sep);
     const thinkingStr = thinking ? theme.fg("dim", `thinking: ${truncate(thinking, MAX_THINKING_DISPLAY)}`) : "";
-    const line2 = [model, sensitivity, steers, actionStr, thinkingStr].filter(Boolean).join(sep);
+    const line2 = [model, prompt, sensitivity, steers, actionStr, thinkingStr].filter(Boolean).join(sep);
 
     return {
       render: (width: number) => [

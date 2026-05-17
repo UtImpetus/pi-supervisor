@@ -165,15 +165,21 @@ If the supervisor sends **5 consecutive steering messages** without declaring th
 
 The supervisor's reasoning is controlled by its **system prompt** — not the goal. The goal is always set at runtime via `/supervise <outcome>`. `SUPERVISOR.md` defines *how* the supervisor thinks: its rules, persona, and project-specific constraints.
 
-**Discovery order** (mirrors pi's `SYSTEM.md` convention):
+**Discovery order** (model-specific files take priority over generic at each level):
 
 | Priority | Location | Use for |
 |---|---|---|
-| 1 | `.pi/SUPERVISOR.md` | Project-specific rules |
-| 2 | `~/.pi/agent/SUPERVISOR.md` | Global personal rules |
-| 3 | Built-in template | Fallback |
+| 1 | `.pi/<modelId>-SUPERVISOR.md` | Project-local, model-specific rules |
+| 2 | `.pi/SUPERVISOR.md` | Project-local, model-agnostic rules |
+| 3 | `~/.pi/agent/<modelId>-SUPERVISOR.md` | Global, model-specific rules |
+| 4 | `~/.pi/agent/SUPERVISOR.md` | Global, model-agnostic rules |
+| 5 | Built-in model-specific prompt | Hardcoded per model prefix (e.g. `deepseek`)
+| 6 | Built-in default template | Fallback |
 
-The active source is shown when you run `/supervise <outcome>` or `/supervise status`.
+The active source is shown when you run `/supervise <outcome>` or `/supervise status`. Sources are reported as:
+- A file path (e.g. `.pi/deepseek-v4-flash-SUPERVISOR.md`) for file-based prompts
+- `built-in:deepseek` for built-in model-specific prompts
+- `built-in` for the default fallback prompt
 
 ### Built-in system prompt
 
@@ -224,6 +230,36 @@ Response schema (strict JSON):
 }
 ```
 
+### Model-specific SUPERVISOR.md
+
+You can create prompt files that apply only when a specific model is supervising. The file naming convention uses the modelId as a prefix:
+
+```
+.deepseek-v4-flash-SUPERVISOR.md
+claude-haiku-4-5-20251001-SUPERVISOR.md
+gpt-4o-mini-SUPERVISOR.md
+```
+
+These are discovered in the same locations as `SUPERVISOR.md`:
+- `.pi/deepseek-v4-flash-SUPERVISOR.md` — project-local, used only when the supervisor model is `deepseek-v4-flash`
+- `~/.pi/agent/deepseek-v4-flash-SUPERVISOR.md` — global, used only for that model
+
+Model-specific files take priority over the generic `SUPERVISOR.md` at each level. So if both `.pi/SUPERVISOR.md` and `.pi/deepseek-v4-flash-SUPERVISOR.md` exist, the model-specific file wins when using `deepseek-v4-flash`.
+
+The modelId is matched exactly (the full model ID string from your provider, case-insensitive for built-in prefix matching). For example:
+- `deepseek-v4-flash` → looks for `deepseek-v4-flash-SUPERVISOR.md`
+- `claude-haiku-4-5-20251001` → looks for `claude-haiku-4-5-20251001-SUPERVISOR.md`
+
+#### Built-in model prompts
+
+The extension ships with built-in prompts for certain model families. These are matched by prefix (case-insensitive):
+
+| Prefix | Models that match | What's different |
+|---|---|---|
+| `deepseek` | `deepseek-v4-flash`, `deepseek-chat`, etc. | Stricter "done" criteria for promised external surfaces and exact schemas, 6 DeepSeek-specific failure modes (return wrapping, missing external wiring, field naming, extra fields, case mismatches, return type violations), extra emphasis on strict JSON output |
+
+Built-in model prompts are lower priority than any file-based `SUPERVISOR.md`. To override a built-in model prompt, create a generic or model-specific `SUPERVISOR.md` file.
+
 ### Writing a custom SUPERVISOR.md
 
 You must preserve the JSON response schema. Everything else is up to you.
@@ -257,7 +293,7 @@ src/
   index.ts              # Extension entry point, event wiring, /supervise command, start_supervision tool
   types.ts              # SupervisorState, SteeringDecision, ConversationMessage, SensitivityConfig, presets & helpers
   state.ts              # SupervisorStateManager — in-memory state + session persistence
-  engine.ts             # Snapshot building, SUPERVISOR.md loading, prompt construction, analyze()
+  engine.ts             # Snapshot building, SUPERVISOR.md loading (with model-specific discovery), prompt construction, analyze()
   model-client.ts       # One-shot supervisor LLM calls via pi's AgentSession API
   workspace-config.ts   # .pi/supervisor-config.json read/write for saved supervisor settings
   ui/

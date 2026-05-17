@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSnapshot, extractCompactionSummary, loadSystemPrompt } from "../src/engine.js";
+import { buildSnapshot, extractCompactionSummary, findBuiltinModelPrompt, loadSystemPrompt } from "../src/engine.js";
 
 // Build a minimal ExtensionContext that only exposes the bits engine.ts touches.
 function makeCtx(branch: any[]): any {
@@ -20,7 +20,19 @@ describe("loadSystemPrompt", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("prefers .pi/SUPERVISOR.md in the project over global / built-in", () => {
+  it("returns built-in prompt when no files exist and no modelId", () => {
+    const { prompt, source } = loadSystemPrompt(cwd);
+    expect(prompt).toContain("supervisor monitoring a coding AI assistant");
+    expect(source).toBe("built-in");
+  });
+
+  it("returns built-in prompt when modelId has no matching files and no built-in match", () => {
+    const { prompt, source } = loadSystemPrompt(cwd, "gpt-5-turbo");
+    expect(prompt).toContain("supervisor monitoring a coding AI assistant");
+    expect(source).toBe("built-in");
+  });
+
+  it("prefers .pi/SUPERVISOR.md over global and built-in", () => {
     mkdirSync(join(cwd, ".pi"));
     const projectPrompt = "PROJECT-SPECIFIC SUPERVISOR PROMPT";
     writeFileSync(join(cwd, ".pi", "SUPERVISOR.md"), `${projectPrompt}\n\n`);
@@ -28,6 +40,122 @@ describe("loadSystemPrompt", () => {
     const { prompt, source } = loadSystemPrompt(cwd);
     expect(prompt).toBe(projectPrompt); // trim() applied
     expect(source).toBe(join(cwd, ".pi", "SUPERVISOR.md"));
+  });
+
+  it("prefers model-specific .pi/<modelId>-SUPERVISOR.md over generic .pi/SUPERVISOR.md", () => {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "SUPERVISOR.md"), "GENERIC PROMPT");
+    writeFileSync(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"), "DEEPSEEK-SPECIFIC PROMPT");
+
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toBe("DEEPSEEK-SPECIFIC PROMPT");
+    expect(source).toBe(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"));
+  });
+
+  it("falls back to generic .pi/SUPERVISOR.md when modelId has no model-specific file", () => {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "SUPERVISOR.md"), "GENERIC PROMPT");
+    // No deepseek-v4-flash-SUPERVISOR.md exists
+
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toBe("GENERIC PROMPT");
+    expect(source).toBe(join(cwd, ".pi", "SUPERVISOR.md"));
+  });
+
+  it("prefers project model-specific over global model-specific", () => {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"), "PROJECT-MODEL-SPECIFIC");
+
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toBe("PROJECT-MODEL-SPECIFIC");
+    expect(source).toBe(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"));
+  });
+
+  it("returns built-in model-specific prompt for deepseek models when no files exist", () => {
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toContain("DeepSeek");
+    expect(source).toBe("built-in:deepseek");
+  });
+
+  it("returns built-in model-specific prompt for deepseek-chat (prefix match)", () => {
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-chat");
+    expect(prompt).toContain("DeepSeek");
+    expect(source).toBe("built-in:deepseek");
+  });
+
+  it("returns generic built-in for non-matching modelIds", () => {
+    const { prompt, source } = loadSystemPrompt(cwd, "claude-haiku-4-5-20251001");
+    expect(prompt).toContain("supervisor monitoring a coding AI assistant");
+    expect(prompt).not.toContain("DeepSeek");
+    expect(prompt).not.toContain("public functions/APIs are importable");
+    expect(source).toBe("built-in");
+  });
+
+  it("keeps strict contract verification in the DeepSeek-specific built-in prompt only", () => {
+    const generic = loadSystemPrompt(cwd, "claude-haiku-4-5-20251001");
+    const deepseek = loadSystemPrompt(cwd, "deepseek-v4-flash");
+
+    expect(generic.prompt).not.toContain("public functions/APIs are importable");
+    expect(deepseek.prompt).toContain("required deliverables are complete");
+    expect(deepseek.prompt).toContain("When the outcome requires public functions, commands,");
+    expect(deepseek.prompt).toContain("routes, exports, entry points, files, or config-visible behavior");
+    expect(deepseek.prompt).not.toContain("All required public functions are exposed on the public API surface");
+    expect(deepseek.source).toBe("built-in:deepseek");
+  });
+
+  it("model-specific file takes priority over built-in model prompt", () => {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"), "MY CUSTOM DEEPSEEK PROMPT");
+
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toBe("MY CUSTOM DEEPSEEK PROMPT");
+    expect(source).toBe(join(cwd, ".pi", "deepseek-v4-flash-SUPERVISOR.md"));
+  });
+
+  it("generic file takes priority over built-in model prompt", () => {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "SUPERVISOR.md"), "GENERIC CUSTOM PROMPT");
+
+    const { prompt, source } = loadSystemPrompt(cwd, "deepseek-v4-flash");
+    expect(prompt).toBe("GENERIC CUSTOM PROMPT");
+    expect(source).toBe(join(cwd, ".pi", "SUPERVISOR.md"));
+  });
+
+  it("is case-insensitive for modelId in built-in prefix matching", () => {
+    const { prompt, source } = loadSystemPrompt(cwd, "DeepSeek-V4-Flash");
+    expect(prompt).toContain("DeepSeek");
+    expect(source).toBe("built-in:deepseek");
+  });
+
+  it("returns generic built-in when modelId is undefined", () => {
+    const { prompt, source } = loadSystemPrompt(cwd);
+    expect(prompt).toContain("supervisor monitoring a coding AI assistant");
+    expect(source).toBe("built-in");
+  });
+});
+
+describe("findBuiltinModelPrompt", () => {
+  it("matches deepseek prefix (deepseek-v4-flash)", () => {
+    const prompt = findBuiltinModelPrompt("deepseek-v4-flash");
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain("DeepSeek");
+  });
+
+  it("matches deepseek prefix (deepseek-chat)", () => {
+    const prompt = findBuiltinModelPrompt("deepseek-chat");
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain("DeepSeek");
+  });
+
+  it("is case-insensitive", () => {
+    const prompt = findBuiltinModelPrompt("DeepSeek-V4");
+    expect(prompt).not.toBeNull();
+    expect(prompt).toContain("DeepSeek");
+  });
+
+  it("returns null for unknown model", () => {
+    expect(findBuiltinModelPrompt("gpt-5-turbo")).toBeNull();
+    expect(findBuiltinModelPrompt("claude-haiku-4-5-20251001")).toBeNull();
   });
 });
 

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupervisorState } from "../src/types.js";
-import { setWidgetVisible, updateUI, type WidgetAction } from "../src/ui/status-widget.js";
+import { describePromptSource, setWidgetVisible, updateUI, type WidgetAction } from "../src/ui/status-widget.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -9,6 +12,14 @@ const plainTheme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
 };
+
+const tempDirs: string[] = [];
+
+function makeTempCwd(): string {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-supervisor-widget-"));
+  tempDirs.push(cwd);
+  return cwd;
+}
 
 function makeState(overrides: Partial<SupervisorState> = {}): SupervisorState {
   return {
@@ -29,10 +40,12 @@ function captureRender(
   state: SupervisorState | null,
   action: WidgetAction = { type: "watching" },
   width = 120,
+  cwd = makeTempCwd(),
 ): string[] {
   let widgetResult: any = null;
 
   const ctx = {
+    cwd,
     ui: {
       setStatus: vi.fn(),
       setWidget: vi.fn((_id: string, factory: any) => {
@@ -55,6 +68,12 @@ describe("status-widget", () => {
     setWidgetVisible(true);
   });
 
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop()!, { recursive: true, force: true });
+    }
+  });
+
   it("renders two lines when active", () => {
     const lines = captureRender(makeState());
     expect(lines.length).toBe(2);
@@ -67,9 +86,14 @@ describe("status-widget", () => {
     expect(lines[0]).toContain("Refactor auth module");
   });
 
-  it("line 2 contains model, sensitivity, and action", () => {
-    const lines = captureRender(makeState());
+  it("line 2 contains model, prompt label, sensitivity, and action", () => {
+    const cwd = makeTempCwd();
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "SUPERVISOR.md"), "GENERIC PROMPT");
+
+    const lines = captureRender(makeState(), { type: "watching" }, 120, cwd);
     expect(lines[1]).toContain("claude-haiku-4-5");
+    expect(lines[1]).toContain("prompt: generic");
     expect(lines[1]).toContain("sensitivity: medium");
     expect(lines[1]).toContain("watching");
   });
@@ -132,6 +156,7 @@ describe("status-widget", () => {
     let widgetCleared = false;
     let statusCleared = false;
     const ctx = {
+      cwd: makeTempCwd(),
       ui: {
         setStatus: vi.fn((_id: string, val: any) => { if (val === undefined) statusCleared = true; }),
         setWidget: vi.fn((_id: string, val: any) => { if (val === undefined) widgetCleared = true; }),
@@ -146,6 +171,7 @@ describe("status-widget", () => {
   it("clears widget when state is inactive", () => {
     let widgetCleared = false;
     const ctx = {
+      cwd: makeTempCwd(),
       ui: {
         setStatus: vi.fn(),
         setWidget: vi.fn((_id: string, val: any) => { if (val === undefined) widgetCleared = true; }),
@@ -160,6 +186,7 @@ describe("status-widget", () => {
     setWidgetVisible(false);
     let widgetCleared = false;
     const ctx = {
+      cwd: makeTempCwd(),
       ui: {
         setStatus: vi.fn(),
         setWidget: vi.fn((_id: string, val: any) => { if (val === undefined) widgetCleared = true; }),
@@ -187,5 +214,23 @@ describe("status-widget", () => {
     expect(lines[1]).toContain("⨍2");
     expect(lines[1]).toContain("≥0.8");
     expect(lines[1]).toContain("w10");
+  });
+});
+
+describe("describePromptSource", () => {
+  it("labels built-in model-specific prompts by prefix", () => {
+    expect(describePromptSource("built-in:deepseek", "deepseek-v4-flash")).toBe("prompt: deepseek");
+  });
+
+  it("labels built-in fallback prompts as default", () => {
+    expect(describePromptSource("built-in", "claude-haiku-4-5")).toBe("prompt: default");
+  });
+
+  it("labels model-specific prompt files as model", () => {
+    expect(describePromptSource("/repo/.pi/deepseek-v4-flash-SUPERVISOR.md", "deepseek-v4-flash")).toBe("prompt: model");
+  });
+
+  it("labels generic prompt files as generic", () => {
+    expect(describePromptSource("/repo/.pi/SUPERVISOR.md", "deepseek-v4-flash")).toBe("prompt: generic");
   });
 });
