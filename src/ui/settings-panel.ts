@@ -2,7 +2,10 @@
  * settings-panel.ts — Interactive settings overlay for the supervisor.
  *
  * Uses pi-tui's SettingsList component to provide a navigable settings UI
- * with cycling values, submenu support (model picker), and live updates.
+ * with cycling values, submenu support (model picker), and explicit apply.
+ *
+ * When sensitivity is a preset, the sub-parameters show resolved values
+ * but cycling them automatically switches to "custom".
  *
  * Opened via `/supervise` (no args) or `/supervise settings`.
  */
@@ -10,43 +13,84 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
 import { type SettingItem, SettingsList, type SettingsListTheme } from "@mariozechner/pi-tui";
-import type { Sensitivity, SupervisorState } from "../types.js";
-import { isWidgetVisible } from "./status-widget.js";
+import type { Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
+import { detectSensitivityPreset, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
 
-const SENSITIVITIES: Sensitivity[] = ["low", "medium", "high"];
+const SENSITIVITIES: Sensitivity[] = ["low", "medium", "high", "custom"];
 
 const SENSITIVITY_DESCRIPTIONS: Record<Sensitivity, string> = {
   low: "Steer only when seriously off track (end of run only)",
-  medium: "Steer on clear drift (end of run + every 3rd mid-turn)",
-  high: "Proactive steering (end of run + every mid-turn)",
+  medium: "Steer on clear drift (end of run + every 3rd mid-run)",
+  high: "Proactive steering (end of run + every mid-run)",
+  custom: "Fine-tuned: adjust check interval, threshold, and window below",
 };
+
+const CHECK_INTERVAL_VALUES = ["0", "1", "2", "3", "4", "5"];
+const CONFIDENCE_VALUES = ["0.70", "0.75", "0.80", "0.85", "0.90", "0.95"];
+const MESSAGE_LIMIT_VALUES = ["4", "6", "8", "10", "12", "16", "20", "24"];
+
+function formatCheckInterval(v: string): string {
+  const n = Number(v);
+  if (n === 0) return "off (end-of-run only)";
+  if (n === 1) return "every turn";
+  return `every ${n} turns`;
+}
+
+export interface SettingsDefaults {
+  provider: string;
+  modelId: string;
+  sensitivity: Sensitivity;
+  sensitivityConfig?: SensitivityConfig;
+  widgetVisible: boolean;
+}
 
 export interface SettingsResult {
   model?: { provider: string; modelId: string };
   sensitivity?: Sensitivity;
+  sensitivityConfig?: SensitivityConfig;
   widget?: boolean;
-  action?: "stop" | "start";
+  action?: "stop";
 }
 
 /**
  * Open the interactive settings panel.
- * Returns the changes the user made, or null if cancelled.
+ * Returns the changes the user explicitly applied, or null if cancelled.
  */
 export async function openSettings(
   ctx: ExtensionContext,
   state: SupervisorState | null,
-  defaultProvider: string,
-  defaultModelId: string,
-  defaultSensitivity: Sensitivity,
+  defaults: SettingsDefaults,
 ): Promise<SettingsResult | null> {
-  const currentProvider = state?.provider ?? defaultProvider;
-  const currentModelId = state?.modelId ?? defaultModelId;
-  const currentSensitivity = state?.sensitivity ?? defaultSensitivity;
+  const currentProvider = state?.provider ?? defaults.provider;
+  const currentModelId = state?.modelId ?? defaults.modelId;
+  const currentSensitivity = state?.sensitivity ?? defaults.sensitivity;
+  const currentConfig = resolveSensitivityConfig(currentSensitivity, state?.sensitivityConfig ?? defaults.sensitivityConfig);
+  const currentWidgetVisible = defaults.widgetVisible;
   const isActive = state?.active === true;
 
-  const result: SettingsResult = {};
+  // Mutable draft state
+  let draftSensitivity: Sensitivity = currentSensitivity;
+  let draftConfig: SensitivityConfig = { ...currentConfig };
+  let draftSensitivityConfig: SensitivityConfig | undefined = currentSensitivity === "custom" ? { ...currentConfig } : undefined;
+
+  const draft: SettingsResult = {};
 
   return ctx.ui.custom<SettingsResult | null>((tui, theme, _kb, done) => {
+    const hasDraftChanges = () => (
+      draft.model !== undefined ||
+      draft.sensitivity !== undefined ||
+      draft.widget !== undefined
+    );
+
+    const submit = (action?: "stop") => {
+      if (action) draft.action = action;
+      if (hasDraftChanges() || action) {
+        done({ ...draft });
+      } else {
+        done({});
+      }
+    };
+
     const makeModelSubmenu = (currentValue: string, submenuDone: (selected?: string) => void) => {
       const [prov, mid] = currentValue.includes("/")
         ? [currentValue.split("/")[0], currentValue.split("/").slice(1).join("/")]
@@ -60,13 +104,24 @@ export async function openSettings(
         ctx.modelRegistry,
         [],
         (model) => {
-          result.model = { provider: model.provider, modelId: model.id };
+          draft.model = { provider: model.provider, modelId: model.id };
           submenuDone(`${model.provider}/${model.id}`);
         },
         () => submenuDone(),
       );
       component.focused = true;
       return component;
+    };
+
+    // Resolve the effective config for sub-param display
+    const effectiveConfig = (): SensitivityConfig => {
+      if (draft.sensitivity && draft.sensitivity !== "custom") {
+        return SENSITIVITY_PRESETS[draft.sensitivity];
+      }
+      if (draft.sensitivity === "custom" || draftSensitivity === "custom") {
+        return draftConfig;
+      }
+      return currentConfig;
     };
 
     const items: SettingItem[] = [
@@ -80,15 +135,36 @@ export async function openSettings(
       {
         id: "sensitivity",
         label: "Sensitivity",
-        description: SENSITIVITY_DESCRIPTIONS[currentSensitivity],
-        currentValue: currentSensitivity,
+        description: SENSITIVITY_DESCRIPTIONS[draftSensitivity],
+        currentValue: draftSensitivity,
         values: [...SENSITIVITIES],
+      },
+      {
+        id: "checkInterval",
+        label: "  Check Interval",
+        description: "How many turns between mid-run checks (0 = off, end-of-run only)",
+        currentValue: formatCheckInterval(String(effectiveConfig().checkInterval)),
+        values: CHECK_INTERVAL_VALUES,
+      },
+      {
+        id: "confidenceThreshold",
+        label: "  Confidence Threshold",
+        description: "Minimum confidence (0–1) to steer mid-run",
+        currentValue: String(effectiveConfig().confidenceThreshold),
+        values: CONFIDENCE_VALUES,
+      },
+      {
+        id: "messageLimit",
+        label: "  Message Window",
+        description: "Number of recent messages included in supervisor context",
+        currentValue: String(effectiveConfig().messageLimit),
+        values: MESSAGE_LIMIT_VALUES,
       },
       {
         id: "widget",
         label: "Widget",
         description: "Show/hide the supervisor widget in the footer",
-        currentValue: isWidgetVisible() ? "visible" : "hidden",
+        currentValue: currentWidgetVisible ? "visible" : "hidden",
         values: ["visible", "hidden"],
       },
     ];
@@ -100,10 +176,28 @@ export async function openSettings(
         description: `Steers: ${state!.interventions.length} · Turns: ${state!.turnCount}`,
         currentValue: `"${state!.outcome.length > 60 ? state!.outcome.slice(0, 59) + "…" : state!.outcome}"`,
       });
+    }
+
+    items.push({
+      id: "apply",
+      label: "Apply & Close",
+      description: "Save pending changes and close the settings panel",
+      currentValue: "",
+      values: ["apply"],
+    });
+    items.push({
+      id: "cancel",
+      label: "Cancel",
+      description: "Discard pending changes and close the settings panel",
+      currentValue: "",
+      values: ["discard"],
+    });
+
+    if (isActive) {
       items.push({
         id: "stop",
         label: "Stop Supervision",
-        description: "Stop the active supervisor",
+        description: "Stop the active supervisor and close the settings panel",
         currentValue: "",
         values: ["confirm"],
       });
@@ -123,22 +217,80 @@ export async function openSettings(
       settingsTheme,
       (id, newValue) => {
         if (id === "sensitivity") {
-          const sens = newValue as Sensitivity;
-          result.sensitivity = sens;
-          // Update description dynamically
-          settingsList.updateValue("sensitivity", sens);
+          const newSens = newValue as Sensitivity;
+          draftSensitivity = newSens;
+          draft.sensitivity = newSens;
+          if (newSens === "custom") {
+            draftConfig = { ...effectiveConfig() };
+            draftSensitivityConfig = { ...draftConfig };
+            draft.sensitivityConfig = draftSensitivityConfig;
+          } else {
+            draftConfig = { ...SENSITIVITY_PRESETS[newSens] };
+            draftSensitivityConfig = undefined;
+            draft.sensitivityConfig = undefined;
+          }
+          // Update sub-param displays to reflect the preset values
+          settingsList.updateValue("sensitivity", newSens);
+          settingsList.updateValue("checkInterval", formatCheckInterval(String(draftConfig.checkInterval)));
+          settingsList.updateValue("confidenceThreshold", String(draftConfig.confidenceThreshold));
+          settingsList.updateValue("messageLimit", String(draftConfig.messageLimit));
+          settingsList.invalidate();
+        } else if (id === "checkInterval") {
+          draftConfig.checkInterval = Number(newValue);
+          draftSensitivityConfig = { ...draftConfig };
+          const detected = detectSensitivityPreset(draftConfig);
+          if (detected !== "custom") {
+            draftSensitivity = detected;
+            draftSensitivityConfig = undefined;
+          } else {
+            draftSensitivity = "custom";
+          }
+          draft.sensitivity = draftSensitivity;
+          draft.sensitivityConfig = draftSensitivityConfig;
+          settingsList.updateValue("sensitivity", draftSensitivity);
+          settingsList.updateValue("checkInterval", formatCheckInterval(newValue));
+          settingsList.invalidate();
+        } else if (id === "confidenceThreshold") {
+          draftConfig.confidenceThreshold = Number(newValue);
+          draftSensitivityConfig = { ...draftConfig };
+          const detected = detectSensitivityPreset(draftConfig);
+          if (detected !== "custom") {
+            draftSensitivity = detected;
+            draftSensitivityConfig = undefined;
+          } else {
+            draftSensitivity = "custom";
+          }
+          draft.sensitivity = draftSensitivity;
+          draft.sensitivityConfig = draftSensitivityConfig;
+          settingsList.updateValue("sensitivity", draftSensitivity);
+          settingsList.updateValue("confidenceThreshold", newValue);
+          settingsList.invalidate();
+        } else if (id === "messageLimit") {
+          draftConfig.messageLimit = Number(newValue);
+          draftSensitivityConfig = { ...draftConfig };
+          const detected = detectSensitivityPreset(draftConfig);
+          if (detected !== "custom") {
+            draftSensitivity = detected;
+            draftSensitivityConfig = undefined;
+          } else {
+            draftSensitivity = "custom";
+          }
+          draft.sensitivity = draftSensitivity;
+          draft.sensitivityConfig = draftSensitivityConfig;
+          settingsList.updateValue("sensitivity", draftSensitivity);
+          settingsList.updateValue("messageLimit", newValue);
+          settingsList.invalidate();
         } else if (id === "widget") {
-          result.widget = newValue === "visible";
+          draft.widget = newValue === "visible";
+        } else if (id === "apply" && newValue === "apply") {
+          submit();
+        } else if (id === "cancel" && newValue === "discard") {
+          done(null);
         } else if (id === "stop" && newValue === "confirm") {
-          result.action = "stop";
-          done(result);
+          submit("stop");
         }
       },
-      () => {
-        // Cancel — return null if no changes, or partial result if some changes were made
-        const hasChanges = result.model || result.sensitivity || result.widget !== undefined;
-        done(hasChanges ? result : null);
-      },
+      () => done(null),
     );
 
     return {
@@ -149,6 +301,8 @@ export async function openSettings(
           : `${theme.fg("dim", "○")} ${theme.bold("Supervisor Settings")}`;
         lines.push(title);
         lines.push(theme.fg("dim", "─".repeat(Math.min(40, width))));
+        lines.push(theme.fg("dim", "Draft changes are only saved when you choose Apply & Close. Cancel or Esc discards."));
+        lines.push("");
         lines.push(...settingsList.render(width));
         return lines;
       },

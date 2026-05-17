@@ -2,8 +2,8 @@
  * Supervisor UI — footer status indicator and widget.
  *
  * Footer: 🎯 emoji badge.
- * Widget line 1: ◉ Supervising · Goal: "…" · model · steers · action
- * Widget line 2: dim thinking text while analyzing (temporary)
+ * Widget line 1: ◉ Supervising · Goal: "…"
+ * Widget line 2: model · sensitivity · steers · action/status
  *
  * Toggle visibility with toggleWidget().
  */
@@ -11,6 +11,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth } from "@mariozechner/pi-tui";
 import type { SupervisorState } from "../types.js";
+import { resolveSensitivityConfig } from "../types.js";
 
 const WIDGET_ID = "supervisor";
 const STATUS_ID = "supervisor";
@@ -20,6 +21,10 @@ const MAX_STEER_DISPLAY   = 50;
 const MAX_THINKING_DISPLAY = 80;
 
 let _widgetVisible = true;
+
+export function setWidgetVisible(visible: boolean): void {
+  _widgetVisible = visible;
+}
 
 /** Toggle the widget on/off. Returns the new visibility state. */
 export function toggleWidget(): boolean {
@@ -66,6 +71,8 @@ export function updateUI(
   const snap = {
     outcome: state.outcome,
     modelId: state.modelId,
+    sensitivity: state.sensitivity,
+    sensitivityConfig: resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig),
     interventions: [...state.interventions],
   };
   const snapAction = action;
@@ -80,7 +87,12 @@ export function updateUI(
     const goalText  = theme.fg("muted", `"${truncate(snap.outcome, MAX_OUTCOME_DISPLAY)}"`);
     const goal      = `${goalLabel} ${goalText}`;
     // Model
-    const model  = theme.fg("dim", snap.modelId);
+    const model = theme.fg("dim", snap.modelId);
+    // Sensitivity
+    const sensitivityLabel = snap.sensitivity === "custom"
+      ? `custom (⨍${snap.sensitivityConfig.checkInterval} ≥${snap.sensitivityConfig.confidenceThreshold} w${snap.sensitivityConfig.messageLimit})`
+      : snap.sensitivity;
+    const sensitivity = theme.fg("dim", `sensitivity: ${sensitivityLabel}`);
     // Steer count
     const steers = steerCount > 0 ? theme.fg("dim", `↗ ${steerCount}`) : "";
 
@@ -103,20 +115,16 @@ export function updateUI(
         break;
     }
 
-    const sep   = theme.fg("dim", " · ");
-    const parts = [header, goal, model, steers, actionStr].filter(Boolean);
-    const line  = parts.join(sep);
-
-    const thinkingLine = thinking
-      ? theme.fg("dim", `  ${truncate(thinking, MAX_THINKING_DISPLAY)}`)
-      : "";
+    const sep = theme.fg("dim", " · ");
+    const line1 = [header, goal].join(sep);
+    const thinkingStr = thinking ? theme.fg("dim", `thinking: ${truncate(thinking, MAX_THINKING_DISPLAY)}`) : "";
+    const line2 = [model, sensitivity, steers, actionStr, thinkingStr].filter(Boolean).join(sep);
 
     return {
-      render: (width: number) => {
-        const l1 = truncateToWidth(line, width);
-        if (!thinkingLine) return [l1];
-        return [l1, truncateToWidth(thinkingLine, width)];
-      },
+      render: (width: number) => [
+        truncateToWidth(line1, width),
+        truncateToWidth(line2, width),
+      ],
       invalidate: () => {},
     };
   });

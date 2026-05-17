@@ -49,7 +49,7 @@ pi -e ~/projects/pi-supervisor/src/index.ts
 | `/supervise widget` | Toggle the status widget on/off |
 | `/supervise model` | Open the interactive model picker |
 | `/supervise model <provider/modelId>` | Set supervisor model directly |
-| `/supervise sensitivity <low\|medium\|high>` | Adjust steering aggressiveness |
+| `/supervise sensitivity <low\|medium\|high\|custom>` | Adjust steering aggressiveness |
 
 ### Examples
 
@@ -74,12 +74,23 @@ The agent can also initiate supervision itself by calling the `start_supervision
 Run `/supervise` (no args) or `/supervise settings` to open the interactive settings panel:
 
 - **Model** — shows current model; press Enter to browse all available models
-- **Sensitivity** — cycle through `low`/`medium`/`high` with Enter or Space
+- **Sensitivity** — cycle through `low`/`medium`/`high`/`custom` with Enter or Space
+  - When `custom` is selected, three sub-parameters appear:
+    - **Check Interval** — turns between mid-run checks (0 = off)
+    - **Confidence Threshold** — minimum confidence to steer mid-run
+    - **Message Window** — recent messages for supervisor context
+  - Changing any sub-parameter auto-switches to `custom`; matching a preset snaps back to its name
 - **Widget** — toggle visibility
 - **Outcome** (when active) — shows goal, steer count, and turn count
 - **Stop** (when active) — stop supervision directly from the panel
 
-Navigate with arrow keys, Escape to close. Changes are applied on close.
+Navigate with arrow keys.
+
+- **Apply & Close** — save pending changes and close
+- **Cancel** — discard pending changes and close
+- **Escape** — discard pending changes and close
+
+Model, sensitivity (including custom config), and widget visibility are remembered for the session. If the project already has a `.pi/` directory, they are also saved to `.pi/supervisor-config.json`.
 
 ### Live Widget
 
@@ -88,21 +99,43 @@ Navigate with arrow keys, Escape to close. Changes are applied on close.
 🎯
 ```
 
-**Widget** (one line, updated live):
+**Widget** (two lines, updated live):
 ```
-◉ Supervising · Goal: "Refactor auth module…" · claude-haiku · ↗ 2 · ⟳ turn 4
-  The agent has added the DI container but hasn't updated the existing call sites yet…
+◉ Supervising · Goal: "Refactor auth module…"
+claude-haiku · sensitivity: medium · ↗ 2 · ⟳ turn 4
 ```
 
-The second line shows the supervisor's reasoning as it streams. Toggle the widget with `/supervise widget`.
+For `custom` sensitivity, the widget shows a compact summary:
+```
+claude-haiku · sensitivity: custom (⨍2 ≥0.8 w10) · ↗ 2 · ⟳ turn 4
+```
+
+Where `⨍` = checkInterval, `≥` = confidenceThreshold, `w` = messageLimit.
+
+While analyzing, the second line can also include a truncated `thinking: ...` snippet after the current status. Toggle the widget with `/supervise widget`.
 
 ## Sensitivity Levels
 
 | Level | When it checks | Confidence threshold | Steering style |
 |---|---|---|---|
-| `low` | End of each run only | — | Only if seriously off track |
+| `low` | End of each run only | 1.0 (only if seriously off track) | Minimal intervention |
 | `medium` (default) | End of run + every 3rd tool cycle mid-run | ≥ 0.90 | On clear drift |
 | `high` | End of run + every tool cycle mid-run | ≥ 0.85 | Proactively |
+| `custom` | User-defined | User-defined | User-defined |
+
+### Custom Sensitivity
+
+When you need fine-grained control, select **custom** in the settings panel. This reveals three sub-parameters:
+
+| Parameter | Description | Values |
+|---|---|---|
+| Check Interval | Turns between mid-run checks (0 = off, end-of-run only) | 0, 1, 2, 3, 4, 5 |
+| Confidence Threshold | Minimum confidence (0–1) to steer mid-run | 0.70, 0.75, 0.80, 0.85, 0.90, 0.95 |
+| Message Window | Number of recent messages for supervisor context | 4, 6, 8, 10, 12, 16, 20, 24 |
+
+Adjusting any sub-parameter automatically switches the sensitivity label to **custom**. If your values happen to match a preset exactly, the label snaps back to that preset name.
+
+Custom settings are also available via the `/supervise sensitivity custom` command and the `start_supervision` tool.
 
 **End-of-run** (`agent_end`): fires once per user prompt after the agent finishes and goes idle. The supervisor must decide `done`, `steer`, or `continue`.
 
@@ -114,11 +147,11 @@ The supervisor runs on a **separate model** — it can be a cheaper/faster model
 
 **Resolution order:**
 1. Previous session state (persists within a session)
-2. `.pi/supervisor-config.json` in the project root (saved by `/supervise model`)
+2. `.pi/supervisor-config.json` in the project root (saved by `/supervise model` and the settings panel when `.pi/` exists)
 3. Active chat model (`ctx.model`) — so it works out of the box with no configuration
 4. Built-in default: `anthropic/claude-haiku-4-5-20251001`
 
-Change at any time with `/supervise model` (interactive picker) or `/supervise model <provider/id>` (direct). The selection is saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
+Change at any time with `/supervise model` (interactive picker), `/supervise model <provider/id>` (direct), or the settings panel. Model, sensitivity (including custom config), and widget visibility are saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
 
 ## Focus and Goal Discipline
 
@@ -222,13 +255,13 @@ Supervision state (outcome, model, sensitivity, intervention history) is stored 
 ```
 src/
   index.ts              # Extension entry point, event wiring, /supervise command, start_supervision tool
-  types.ts              # SupervisorState, SteeringDecision, ConversationMessage
+  types.ts              # SupervisorState, SteeringDecision, ConversationMessage, SensitivityConfig, presets & helpers
   state.ts              # SupervisorStateManager — in-memory state + session persistence
   engine.ts             # Snapshot building, SUPERVISOR.md loading, prompt construction, analyze()
   model-client.ts       # One-shot supervisor LLM calls via pi's AgentSession API
-  workspace-config.ts   # .pi/supervisor-config.json read/write for model persistence
+  workspace-config.ts   # .pi/supervisor-config.json read/write for saved supervisor settings
   ui/
-    status-widget.ts    # 🎯 footer badge + one-line widget with live thinking stream
+    status-widget.ts    # 🎯 footer badge + two-line widget with goal, settings, and live status (shows custom sensitivity details)
     model-picker.ts     # Interactive model picker using pi's ModelSelectorComponent
     settings-panel.ts   # Interactive settings overlay using pi-tui's SettingsList
 ```

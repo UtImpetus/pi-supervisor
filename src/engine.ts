@@ -15,7 +15,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { callSupervisorModel } from "./model-client.js";
-import type { ConversationMessage, SteeringDecision, SupervisorState } from "./types.js";
+import type { ConversationMessage, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
+import { resolveSensitivityConfig } from "./types.js";
 
 // ---- System prompt loading ----
 
@@ -87,12 +88,6 @@ export function loadSystemPrompt(cwd: string): { prompt: string; source: string 
   return { prompt: BUILTIN_SYSTEM_PROMPT, source: "built-in" };
 }
 
-const MESSAGE_LIMITS: Record<string, number> = {
-  low: 6,
-  medium: 12,
-  high: 20,
-};
-
 /**
  * Extract the most recent compaction or branch summary from the session branch.
  * Returns null when none exist. Exported for unit tests.
@@ -160,6 +155,7 @@ function extractAssistantText(content: unknown): string {
 /** Build the user-facing prompt for the supervisor LLM. */
 function buildUserPrompt(
   state: SupervisorState,
+  config: SensitivityConfig,
   snapshot: ConversationMessage[],
   agentIsIdle: boolean,
   stagnating: boolean,
@@ -197,10 +193,20 @@ The agent is making diminishing improvements. Apply a lenient standard:
     ? `CONVERSATION SUMMARY (earlier history, before recent messages):\n${compactionSummary}\n\n`
     : "";
 
+  const midRunDesc = config.checkInterval === 0
+    ? "never check mid-run (only at end of each run)"
+    : config.checkInterval === 1
+      ? "check every tool cycle mid-run"
+      : `check every ${config.checkInterval}rd tool cycle mid-run`;
+
+  const sensitivityDesc = state.sensitivity === "custom"
+    ? `custom (mid-run: ${midRunDesc}, confidence ≥ ${config.confidenceThreshold}, window: ${config.messageLimit} messages)`
+    : state.sensitivity;
+
   return `DESIRED OUTCOME:
 ${state.outcome}
 
-SENSITIVITY: ${state.sensitivity}
+SENSITIVITY: ${sensitivityDesc}
 (low = check only at end of each run, steer if seriously off track; medium = also check every 3rd tool cycle mid-run, steer on clear drift; high = check every tool cycle, steer proactively)
 
 ${agentStatus}${stagnationWarning}
@@ -231,10 +237,11 @@ export async function analyze(
 ): Promise<SteeringDecision> {
   const { prompt: systemPrompt } = loadSystemPrompt(ctx.cwd);
 
-  const limit = MESSAGE_LIMITS[state.sensitivity] ?? 12;
+  const config = resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig);
+  const limit = config.messageLimit;
   const snapshot = buildSnapshot(ctx, limit);
   const compactionSummary = extractCompactionSummary(ctx);
-  const userPrompt = buildUserPrompt(state, snapshot, agentIsIdle, stagnating, compactionSummary);
+  const userPrompt = buildUserPrompt(state, config, snapshot, agentIsIdle, stagnating, compactionSummary);
 
   try {
     return await callSupervisorModel(ctx, state.provider, state.modelId, systemPrompt, userPrompt, signal, onDelta);

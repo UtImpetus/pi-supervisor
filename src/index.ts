@@ -7,18 +7,20 @@
  *   /supervise status             — show current status widget
  *   /supervise model              — open interactive model picker (pi-style)
  *   /supervise model <p/modelId>  — set model directly (scripting)
- *   /supervise sensitivity <low|medium|high> — adjust steering sensitivity
+ *   /supervise sensitivity <low|medium|high|custom> — adjust steering sensitivity
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { analyze, loadSystemPrompt } from "./engine.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
-import type { Sensitivity, SteeringDecision } from "./types.js";
+import type { Sensitivity, SensitivityConfig, SteeringDecision } from "./types.js";
+import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
 import { pickModel } from "./ui/model-picker.js";
-import { openSettings } from "./ui/settings-panel.js";
-import { isWidgetVisible, toggleWidget, updateUI } from "./ui/status-widget.js";
-import { loadWorkspaceModel, saveWorkspaceModel } from "./workspace-config.js";
+import { openSettings, type SettingsResult } from "./ui/settings-panel.js";
+import { setWidgetVisible, toggleWidget, updateUI } from "./ui/status-widget.js";
+import type { WorkspaceSupervisorConfig } from "./workspace-config.js";
+import { loadWorkspaceConfig, saveWorkspaceConfig } from "./workspace-config.js";
 
 /**
  * Extract partial reasoning text from the supervisor's streaming JSON response.
@@ -45,10 +47,81 @@ export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
 
+  const resolveSettingsDefaults = (ctx: ExtensionContext) => {
+    const s = state.getState();
+    const preferences = state.getPreferences();
+    const workspaceConfig = loadWorkspaceConfig(ctx.cwd);
+    const sessionModel = ctx.model;
+    const sensitivity: Sensitivity = s?.active
+      ? s.sensitivity
+      : preferences.sensitivity ?? workspaceConfig?.sensitivity ?? DEFAULT_SENSITIVITY;
+    const sensitivityConfig: SensitivityConfig | undefined = s?.active
+      ? s.sensitivityConfig
+      : preferences.sensitivityConfig ?? workspaceConfig?.sensitivityConfig ?? undefined;
+
+    return {
+      provider: s?.active
+        ? s.provider
+        : preferences.provider ?? workspaceConfig?.provider ?? sessionModel?.provider ?? DEFAULT_PROVIDER,
+      modelId: s?.active
+        ? s.modelId
+        : preferences.modelId ?? workspaceConfig?.modelId ?? sessionModel?.id ?? DEFAULT_MODEL_ID,
+      sensitivity,
+      sensitivityConfig: resolveSensitivityConfig(sensitivity, sensitivityConfig),
+      widgetVisible: preferences.widgetVisible ?? workspaceConfig?.widgetVisible ?? true,
+    };
+  };
+
+  const applySettingsResult = (ctx: ExtensionContext, result: SettingsResult | null) => {
+    if (!result) return;
+
+    if (result.model) {
+      const { provider, modelId } = result.model;
+      state.setModel(provider, modelId);
+      const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
+      ctx.ui.notify(
+        `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+          (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+    }
+
+    if (result.sensitivity) {
+      state.setSensitivity(result.sensitivity, result.sensitivityConfig);
+      const configPatch: WorkspaceSupervisorConfig = { sensitivity: result.sensitivity };
+      if (result.sensitivityConfig) configPatch.sensitivityConfig = result.sensitivityConfig;
+      const saved = saveWorkspaceConfig(ctx.cwd, configPatch);
+      ctx.ui.notify(
+        `Supervisor sensitivity set to "${result.sensitivity}"${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+          (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+    }
+
+    if (result.widget !== undefined) {
+      setWidgetVisible(result.widget);
+      state.setPreferences({ widgetVisible: result.widget });
+      const saved = saveWorkspaceConfig(ctx.cwd, { widgetVisible: result.widget });
+      ctx.ui.notify(
+        `Supervisor widget ${result.widget ? "shown" : "hidden"}.` + (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+    }
+
+    if (result.action === "stop" && state.isActive()) {
+      state.stop();
+      idleSteers = 0;
+      ctx.ui.notify("Supervisor stopped.", "info");
+    }
+
+    updateUI(ctx, state.getState());
+  };
+
   // ---- Session lifecycle: restore state ----
 
   const onSessionLoad = (ctx: ExtensionContext) => {
     state.loadFromSession(ctx);
+    setWidgetVisible(resolveSettingsDefaults(ctx).widgetVisible);
     updateUI(ctx, state.getState());
   };
 
@@ -58,19 +131,21 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
 
-  // ---- Mid-turn steering: medium and high sensitivity ----
+  // ---- Mid-turn steering: medium, high, and custom sensitivity ----
   // turn_end fires after each LLM sub-turn (tool-call cycle) while the agent is still running.
   // low:    no mid-run checks at all
   // medium: check every 3rd tool cycle (turns 2, 5, 8, …), confidence >= 0.9
   // high:   check every tool cycle from turn 2, confidence >= 0.85
+  // custom: uses checkInterval and confidenceThreshold from config
 
   pi.on("turn_end", async (event, ctx) => {
     if (!state.isActive()) return;
     const s = state.getState()!;
 
-    if (s.sensitivity === "low") return;
-    if (event.turnIndex < 2) return; // let the agent settle before intervening
-    if (s.sensitivity === "medium" && (event.turnIndex - 2) % 3 !== 0) return;
+    const config = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
+    if (config.checkInterval === 0) return;
+    if (event.turnIndex < 2) return;
+    if ((event.turnIndex - 2) % config.checkInterval !== 0) return;
 
     let decision: SteeringDecision;
     try {
@@ -79,9 +154,8 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Higher bar for medium — less willing to disrupt productive work
-    const threshold = s.sensitivity === "medium" ? 0.9 : 0.85;
-    if (decision.action === "steer" && decision.message && decision.confidence >= threshold) {
+    // Apply the configured confidence threshold
+    if (decision.action === "steer" && decision.message && decision.confidence >= config.confidenceThreshold) {
       state.addIntervention({
         turnCount: s.turnCount,
         message: decision.message,
@@ -146,10 +220,10 @@ export default function (pi: ExtensionAPI) {
 
       if (trimmed === "widget") {
         const visible = toggleWidget();
-        if (state.isActive()) {
-          updateUI(ctx, state.getState());
-        }
-        ctx.ui.notify(`Supervisor widget ${visible ? "shown" : "hidden"}.`, "info");
+        state.setPreferences({ widgetVisible: visible });
+        const saved = saveWorkspaceConfig(ctx.cwd, { widgetVisible: visible });
+        updateUI(ctx, state.getState());
+        ctx.ui.notify(`Supervisor widget ${visible ? "shown" : "hidden"}.` + (saved ? " · saved to .pi/" : ""), "info");
         return;
       }
 
@@ -171,36 +245,26 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("No active supervision. Use /supervise <outcome> to start.", "info");
           return;
         }
-        // Open the interactive settings panel (same as bare /supervise)
-        const result = await openSettings(ctx, s, DEFAULT_PROVIDER, DEFAULT_MODEL_ID, DEFAULT_SENSITIVITY);
-        if (result?.model) {
-          if (state.isActive()) state.setModel(result.model.provider, result.model.modelId);
-          saveWorkspaceModel(ctx.cwd, result.model.provider, result.model.modelId);
-        }
-        if (result?.sensitivity && state.isActive()) state.setSensitivity(result.sensitivity);
-        if (result?.widget !== undefined && result.widget !== isWidgetVisible()) toggleWidget();
-        if (result?.action === "stop" && state.isActive()) { state.stop(); idleSteers = 0; }
-        updateUI(ctx, state.getState());
+        const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
+        applySettingsResult(ctx, result);
         return;
       }
 
       if (trimmed === "model" || trimmed.startsWith("model ")) {
         const spec = trimmed.slice(5).trim(); // "" when no args
+        const defaults = resolveSettingsDefaults(ctx);
 
         if (!spec) {
           // No args → open the interactive pi-style model picker
-          const s = state.getState();
-          const picked = await pickModel(ctx, s?.provider, s?.modelId);
+          const picked = await pickModel(ctx, defaults.provider, defaults.modelId);
           if (!picked) return; // user cancelled
 
           const provider = picked.provider;
           const modelId = picked.id;
 
-          if (state.isActive()) {
-            state.setModel(provider, modelId);
-            updateUI(ctx, state.getState());
-          }
-          const saved = saveWorkspaceModel(ctx.cwd, provider, modelId);
+          state.setModel(provider, modelId);
+          const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
+          updateUI(ctx, state.getState());
           ctx.ui.notify(
             `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
               (saved ? " · saved to .pi/" : ""),
@@ -214,18 +278,16 @@ export default function (pi: ExtensionAPI) {
         let provider: string;
         let modelId: string;
         if (slashIdx === -1) {
-          provider = state.getState()?.provider ?? DEFAULT_PROVIDER;
+          provider = defaults.provider;
           modelId = spec;
         } else {
           provider = spec.slice(0, slashIdx);
           modelId = spec.slice(slashIdx + 1);
         }
 
-        if (state.isActive()) {
-          state.setModel(provider, modelId);
-          updateUI(ctx, state.getState());
-        }
-        const saved = saveWorkspaceModel(ctx.cwd, provider, modelId);
+        state.setModel(provider, modelId);
+        const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
+        updateUI(ctx, state.getState());
         ctx.ui.notify(
           `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
             (saved ? " · saved to .pi/" : ""),
@@ -236,17 +298,18 @@ export default function (pi: ExtensionAPI) {
 
       if (trimmed.startsWith("sensitivity ")) {
         const level = trimmed.slice(12).trim() as Sensitivity;
-        if (level !== "low" && level !== "medium" && level !== "high") {
-          ctx.ui.notify("Usage: /supervise sensitivity <low|medium|high>", "warning");
+        if (level !== "low" && level !== "medium" && level !== "high" && level !== "custom") {
+          ctx.ui.notify("Usage: /supervise sensitivity <low|medium|high|custom>", "warning");
           return;
         }
-        if (!state.isActive()) {
-          ctx.ui.notify(`Sensitivity will be set to "${level}" on next /supervise.`, "info");
-        } else {
-          state.setSensitivity(level);
-          updateUI(ctx, state.getState());
-          ctx.ui.notify(`Supervisor sensitivity set to "${level}"`, "info");
-        }
+        state.setSensitivity(level, level === "custom" ? SENSITIVITY_PRESETS.medium : undefined);
+        const saved = saveWorkspaceConfig(ctx.cwd, { sensitivity: level });
+        updateUI(ctx, state.getState());
+        ctx.ui.notify(
+          `Supervisor sensitivity set to "${level}"${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+            (saved ? " · saved to .pi/" : ""),
+          "info"
+        );
         return;
       }
 
@@ -254,60 +317,22 @@ export default function (pi: ExtensionAPI) {
 
       if (!trimmed || trimmed === "settings") {
         const s = state.getState();
-        const result = await openSettings(ctx, s, DEFAULT_PROVIDER, DEFAULT_MODEL_ID, DEFAULT_SENSITIVITY);
-        if (!result) return; // user cancelled with no changes
-
-        // Apply model change
-        if (result.model) {
-          const { provider: p, modelId: m } = result.model;
-          if (state.isActive()) {
-            state.setModel(p, m);
-          }
-          const saved = saveWorkspaceModel(ctx.cwd, p, m);
-          ctx.ui.notify(
-            `Supervisor model set to ${p}/${m}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
-              (saved ? " · saved to .pi/" : ""),
-            "info"
-          );
-        }
-
-        // Apply sensitivity change
-        if (result.sensitivity) {
-          if (state.isActive()) {
-            state.setSensitivity(result.sensitivity);
-          }
-          ctx.ui.notify(`Supervisor sensitivity set to "${result.sensitivity}"`, "info");
-        }
-
-        // Apply widget toggle
-        if (result.widget !== undefined) {
-          const currentlyVisible = isWidgetVisible();
-          if (result.widget !== currentlyVisible) {
-            toggleWidget();
-          }
-        }
-
-        // Apply stop action
-        if (result.action === "stop" && state.isActive()) {
-          state.stop();
-          idleSteers = 0;
-          ctx.ui.notify("Supervisor stopped.", "info");
-        }
-
-        updateUI(ctx, state.getState());
+        const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
+        applySettingsResult(ctx, result);
         return;
       }
 
-      // Resolve model settings: session state → workspace config → active session model → built-in defaults
-      const existing = state.getState();
-      const workspaceModel = loadWorkspaceModel(ctx.cwd);
-      const sessionModel = ctx.model;
-      let provider = existing?.provider ?? workspaceModel?.provider ?? sessionModel?.provider ?? DEFAULT_PROVIDER;
-      let modelId  = existing?.modelId  ?? workspaceModel?.modelId  ?? sessionModel?.id      ?? DEFAULT_MODEL_ID;
-      const sensitivity = existing?.sensitivity ?? DEFAULT_SENSITIVITY;
+      // Resolve settings: session preferences → workspace config → active session model → built-in defaults
+      const defaults = resolveSettingsDefaults(ctx);
+      let provider = defaults.provider;
+      let modelId = defaults.modelId;
+      const sensitivity = defaults.sensitivity;
 
       // Only prompt for a model if none has been configured yet
-      if (!existing) {
+      const preferences = state.getPreferences();
+      const workspaceConfig = loadWorkspaceConfig(ctx.cwd);
+      const hasConfiguredModel = Boolean(preferences.provider && preferences.modelId) || Boolean(workspaceConfig?.provider && workspaceConfig?.modelId);
+      if (!hasConfiguredModel) {
         const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
         if (!apiKey) {
           ctx.ui.notify(`No API key for "${provider}/${modelId}" — pick a model with an available key.`, "warning");
@@ -318,7 +343,8 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      state.start(trimmed, provider, modelId, sensitivity);
+      const sensitivityConfig = resolveSensitivityConfig(sensitivity, defaults.sensitivityConfig);
+      state.start(trimmed, provider, modelId, sensitivity, sensitivityConfig);
       idleSteers = 0;
       updateUI(ctx, state.getState());
 
@@ -350,10 +376,19 @@ export default function (pi: ExtensionAPI) {
         Type.Literal("low"),
         Type.Literal("medium"),
         Type.Literal("high"),
+        Type.Literal("custom"),
       ], {
         description:
           "How aggressively to steer. low = only when seriously off track, " +
-          "medium = on mild drift (default), high = proactively + mid-turn checks.",
+          "medium = on mild drift (default), high = proactively + mid-turn checks, " +
+          "custom = manually tuned check interval/threshold/window.",
+      })),
+      sensitivityConfig: Type.Optional(Type.Object({
+        checkInterval: Type.Number({ description: "Turns between mid-run checks (0 = off)" }),
+        confidenceThreshold: Type.Number({ description: "Min confidence (0-1) to steer mid-run" }),
+        messageLimit: Type.Number({ description: "Recent messages for supervisor context" }),
+      }, {
+        description: "Custom sensitivity parameters (only used when sensitivity=custom)",
       })),
       model: Type.Optional(Type.String({
         description:
@@ -376,8 +411,11 @@ export default function (pi: ExtensionAPI) {
 
       // Resolve sensitivity
       const sensitivity: Sensitivity = params.sensitivity ?? DEFAULT_SENSITIVITY;
+      const resolvedConfig = params.sensitivityConfig
+        ? { ...params.sensitivityConfig }
+        : resolveSensitivityConfig(sensitivity);
 
-      // Resolve model: tool param → workspace config → active session model → built-in default
+      // Resolve model: tool param → saved preferences/workspace config → active session model → built-in default
       let provider: string;
       let modelId: string;
       if (params.model) {
@@ -385,13 +423,12 @@ export default function (pi: ExtensionAPI) {
         provider = slash === -1 ? DEFAULT_PROVIDER : params.model.slice(0, slash);
         modelId  = slash === -1 ? params.model     : params.model.slice(slash + 1);
       } else {
-        const workspaceModel = loadWorkspaceModel(ctx.cwd);
-        const sessionModel   = ctx.model;
-        provider = workspaceModel?.provider ?? sessionModel?.provider ?? DEFAULT_PROVIDER;
-        modelId  = workspaceModel?.modelId  ?? sessionModel?.id      ?? DEFAULT_MODEL_ID;
+        const defaults = resolveSettingsDefaults(ctx);
+        provider = defaults.provider;
+        modelId = defaults.modelId;
       }
 
-      state.start(params.outcome, provider, modelId, sensitivity);
+      state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig);
       idleSteers = 0;
       updateUI(ctx, state.getState());
 
