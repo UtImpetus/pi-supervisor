@@ -14,9 +14,13 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { SteeringDecision } from "./types.js";
 
+const MODEL_CALL_MAX_ATTEMPTS = 2;
+const MODEL_CALL_RETRY_DELAY_MS = 350;
+
 /**
  * Run a one-shot LLM call using pi's internal agent session.
  * Returns the raw response text, or null on failure.
+ * Retries once on transient session/prompt failures, but never retries after abort.
  */
 export async function callModel(
   ctx: ExtensionContext,
@@ -43,45 +47,51 @@ export async function callModel(
   });
   await loader.reload();
 
-  let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
-  try {
-    const result = await createAgentSession({
-      sessionManager: SessionManager.inMemory(),
-      modelRegistry: ctx.modelRegistry,
-      model,
-      tools: [],
-      resourceLoader: loader,
-    });
-    session = result.session;
-  } catch {
-    return null;
-  }
+  for (let attempt = 1; attempt <= MODEL_CALL_MAX_ATTEMPTS; attempt++) {
+    let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+    let onAbort: (() => void) | undefined;
+    let unsubscribe = () => {};
+    let responseText = "";
 
-  const onAbort = () => session.abort();
-  signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const result = await createAgentSession({
+        sessionManager: SessionManager.inMemory(),
+        modelRegistry: ctx.modelRegistry,
+        model,
+        tools: [],
+        resourceLoader: loader,
+      });
+      session = result.session;
 
-  let responseText = "";
-  const unsubscribe = session.subscribe((event) => {
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
-      responseText += event.assistantMessageEvent.delta;
-      onDelta?.(responseText);
+      const activeSession = session;
+      onAbort = () => activeSession.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      unsubscribe = activeSession.subscribe((event) => {
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          responseText += event.assistantMessageEvent.delta;
+          onDelta?.(responseText);
+        }
+      });
+
+      await activeSession.prompt(userPrompt);
+      return responseText;
+    } catch {
+      if (signal?.aborted) return null;
+      if (attempt === MODEL_CALL_MAX_ATTEMPTS) return null;
+      const shouldRetry = await waitForRetry(MODEL_CALL_RETRY_DELAY_MS, signal);
+      if (!shouldRetry) return null;
+    } finally {
+      unsubscribe();
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      session?.dispose();
     }
-  });
-
-  try {
-    await session.prompt(userPrompt);
-  } catch {
-    return null;
-  } finally {
-    unsubscribe();
-    signal?.removeEventListener("abort", onAbort);
-    session.dispose();
   }
 
-  return responseText;
+  return null;
 }
 
 /**
@@ -131,6 +141,25 @@ export function parseDecision(text: string): SteeringDecision {
   } catch {
     return safeContinue("Failed to parse supervisor JSON decision");
   }
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+
+  return await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delayMs);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function safeContinue(reason: string): SteeringDecision {

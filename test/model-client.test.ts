@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { parseDecision } from "../src/model-client.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { createAgentSessionMock, reloadMock } = vi.hoisted(() => ({
+  createAgentSessionMock: vi.fn(),
+  reloadMock: vi.fn(),
+}));
+
+vi.mock("@mariozechner/pi-coding-agent", () => ({
+  createAgentSession: createAgentSessionMock,
+  DefaultResourceLoader: class {
+    constructor(_opts: any) {}
+    reload = reloadMock;
+  },
+  getAgentDir: () => "/mock-agent-dir",
+  SessionManager: {
+    inMemory: () => ({ kind: "in-memory" }),
+  },
+}));
+
+import { callSupervisorModel, parseDecision } from "../src/model-client.js";
 
 describe("parseDecision — happy paths", () => {
   it("parses bare JSON with all four fields", () => {
@@ -98,5 +116,121 @@ describe("parseDecision — failure modes return safeContinue (never crash)", ()
 
   it("returns continue/0 on completely empty input", () => {
     expect(parseDecision("").action).toBe("continue");
+  });
+});
+
+function makeCtx() {
+  return {
+    cwd: "/repo",
+    modelRegistry: {
+      find: vi.fn(() => ({ provider: "anthropic", id: "claude-haiku-4-5" })),
+    },
+  } as any;
+}
+
+function makeSession(options: { deltas?: string[]; promptError?: Error } = {}) {
+  const unsubscribe = vi.fn();
+  return {
+    abort: vi.fn(),
+    dispose: vi.fn(),
+    subscribe: vi.fn((callback: (event: any) => void) => {
+      for (const delta of options.deltas ?? []) {
+        callback({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta },
+        });
+      }
+      return unsubscribe;
+    }),
+    prompt: options.promptError
+      ? vi.fn(async () => { throw options.promptError; })
+      : vi.fn(async () => undefined),
+    unsubscribe,
+  };
+}
+
+describe("callSupervisorModel — retries transient model call failures safely", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    reloadMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries once when session creation fails transiently", async () => {
+    vi.useFakeTimers();
+    const session = makeSession({
+      deltas: [`{"action":"continue","reasoning":"ok","confidence":0.8}`],
+    });
+
+    createAgentSessionMock
+      .mockRejectedValueOnce(new Error("temporary provider failure"))
+      .mockResolvedValueOnce({ session });
+
+    const promise = callSupervisorModel(makeCtx(), "anthropic", "claude-haiku-4-5", "system", "user");
+    await vi.runAllTimersAsync();
+    const out = await promise;
+
+    expect(out).toMatchObject({ action: "continue", reasoning: "ok", confidence: 0.8 });
+    expect(reloadMock).toHaveBeenCalledTimes(1);
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(session.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries once when the prompt call fails and cleans up both attempts", async () => {
+    vi.useFakeTimers();
+    const failedSession = makeSession({ promptError: new Error("rate limited") });
+    const successfulSession = makeSession({
+      deltas: [`{"action":"done","reasoning":"recovered","confidence":0.9}`],
+    });
+
+    createAgentSessionMock
+      .mockResolvedValueOnce({ session: failedSession })
+      .mockResolvedValueOnce({ session: successfulSession });
+
+    const promise = callSupervisorModel(makeCtx(), "anthropic", "claude-haiku-4-5", "system", "user");
+    await vi.runAllTimersAsync();
+    const out = await promise;
+
+    expect(out).toMatchObject({ action: "done", reasoning: "recovered", confidence: 0.9 });
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(failedSession.dispose).toHaveBeenCalledTimes(1);
+    expect(failedSession.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(successfulSession.dispose).toHaveBeenCalledTimes(1);
+    expect(successfulSession.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry after abort", async () => {
+    const controller = new AbortController();
+    const abortedSession = makeSession();
+    abortedSession.prompt = vi.fn(async () => {
+      controller.abort();
+      throw new Error("aborted");
+    });
+
+    createAgentSessionMock.mockResolvedValueOnce({ session: abortedSession });
+
+    const out = await callSupervisorModel(
+      makeCtx(),
+      "anthropic",
+      "claude-haiku-4-5",
+      "system",
+      "user",
+      controller.signal,
+    );
+
+    expect(out).toEqual({
+      action: "continue",
+      reasoning: "Model call failed",
+      confidence: 0,
+    });
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(abortedSession.abort).toHaveBeenCalledTimes(1);
+    expect(abortedSession.dispose).toHaveBeenCalledTimes(1);
+    expect(abortedSession.unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
