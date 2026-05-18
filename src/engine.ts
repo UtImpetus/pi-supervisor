@@ -227,6 +227,18 @@ export function findBuiltinModelPrompt(modelId: string): string | null {
   return null;
 }
 
+export function loadBuiltinSystemPrompt(modelId?: string): { prompt: string; source: string } {
+  if (modelId) {
+    const builtinPrompt = findBuiltinModelPrompt(modelId);
+    if (builtinPrompt) {
+      const prefix = findMatchingPrefixKey(modelId)!;
+      return { prompt: builtinPrompt, source: `built-in:${prefix}` };
+    }
+  }
+
+  return { prompt: BUILTIN_SYSTEM_PROMPT, source: "built-in" };
+}
+
 /**
  * Find which prefix key matched a modelId (for source reporting).
  * Returns the matched key or null.

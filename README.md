@@ -43,26 +43,33 @@ pi -e ~/projects/pi-supervisor/src/index.ts
 | Command | Description |
 |---|---|
 | `/supervise <outcome>` | Start supervising toward a desired outcome |
-| `/supervise` or `/supervise settings` | Open the interactive settings panel |
-| `/supervise stop` | Stop active supervision |
-| `/supervise status` | Show current state (opens settings panel if active) |
-| `/supervise widget` | Toggle the status widget on/off |
-| `/supervise model` | Open the interactive model picker |
-| `/supervise model <provider/modelId>` | Set supervisor model directly |
-| `/supervise sensitivity <low\|medium\|high\|custom>` | Adjust steering aggressiveness |
+| `/supervise` or `/supervise:settings` | Open the interactive settings panel |
+| `/supervise:status` | Show current state (opens settings panel if active) |
+| `/supervise:stop` | Stop active supervision |
+| `/supervise:widget` | Toggle the status widget on/off |
+| `/supervise:model [provider/modelId]` | Open the interactive model picker or set supervisor model directly |
+| `/supervise:sensitivity <low\|medium\|high\|custom>` | Adjust steering aggressiveness |
+| `/supervise:debug [status\|on\|off\|toggle]` | Show or change supervisor payload debug logging |
+| `/supervise:lesson-learned [optional guidance]` | Derive project-specific supervisor lessons from the current branch session and preview a `.pi/SUPERVISOR.md` proposal |
+
+Legacy compatibility forms like `/supervise stop`, `/supervise model ...`, and `/supervise sensitivity ...` are still supported.
 
 ### Examples
 
 ```
 /supervise Refactor the auth module to use dependency injection and add 90% test coverage
 
-/supervise model
+/supervise:model
 # Opens pi's model selector — pick any model with a configured API key
 
-/supervise sensitivity low
+/supervise:sensitivity low
 # Only steer when seriously off track
 
-/supervise stop
+/supervise:lesson-learned focus on repeated CLI verification gaps
+# Builds a project-local .pi/SUPERVISOR.md proposal from the current branch session,
+# opens it in an editor preview, and writes it only after you confirm/save.
+
+/supervise:stop
 ```
 
 The agent can also initiate supervision itself by calling the `start_supervision` tool — useful when it recognises a task needs goal tracking. Once active, supervision is locked: only the user can change or stop it.
@@ -71,7 +78,7 @@ The agent can also initiate supervision itself by calling the `start_supervision
 
 ### Settings Panel
 
-Run `/supervise` (no args) or `/supervise settings` to open the interactive settings panel:
+Run `/supervise` (no args) or `/supervise:settings` to open the interactive settings panel:
 
 - **Model** — shows current model; press Enter to browse all available models
 - **Sensitivity** — cycle through `low`/`medium`/`high`/`custom` with Enter or Space
@@ -90,7 +97,7 @@ Navigate with arrow keys.
 - **Cancel** — discard pending changes and close
 - **Escape** — discard pending changes and close
 
-Model, sensitivity (including custom config), and widget visibility are remembered for the session. If the project already has a `.pi/` directory, they are also saved to `.pi/supervisor-config.json`.
+Model, sensitivity (including custom config), widget visibility, and payload-debug preference are remembered for the session. If the project already has a `.pi/` directory, they are also saved to `.pi/supervisor-config.json`.
 
 ### Live Widget
 
@@ -112,7 +119,7 @@ claude-haiku · sensitivity: custom (⨍2 ≥0.8 w10) · ↗ 2 · ⟳ turn 4
 
 Where `⨍` = checkInterval, `≥` = confidenceThreshold, `w` = messageLimit.
 
-While analyzing, the second line can also include a truncated `thinking: ...` snippet after the current status. Toggle the widget with `/supervise widget`.
+While analyzing, the second line can also include a truncated `thinking: ...` snippet after the current status. Toggle the widget with `/supervise:widget`.
 
 ## Sensitivity Levels
 
@@ -135,7 +142,7 @@ When you need fine-grained control, select **custom** in the settings panel. Thi
 
 Adjusting any sub-parameter automatically switches the sensitivity label to **custom**. If your values happen to match a preset exactly, the label snaps back to that preset name.
 
-Custom settings are also available via the `/supervise sensitivity custom` command and the `start_supervision` tool.
+Custom settings are also available via the `/supervise:sensitivity custom` command and the `start_supervision` tool.
 
 **End-of-run** (`agent_end`): fires once per user prompt after the agent finishes and goes idle. The supervisor must decide `done`, `steer`, or `continue`.
 
@@ -147,11 +154,11 @@ The supervisor runs on a **separate model** — it can be a cheaper/faster model
 
 **Resolution order:**
 1. Previous session state (persists within a session)
-2. `.pi/supervisor-config.json` in the project root (saved by `/supervise model` and the settings panel when `.pi/` exists)
+2. `.pi/supervisor-config.json` in the project root (saved by `/supervise:model` and the settings panel when `.pi/` exists)
 3. Active chat model (`ctx.model`) — so it works out of the box with no configuration
 4. Built-in default: `anthropic/claude-haiku-4-5-20251001`
 
-Change at any time with `/supervise model` (interactive picker), `/supervise model <provider/id>` (direct), or the settings panel. Model, sensitivity (including custom config), and widget visibility are saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
+Change at any time with `/supervise:model` (interactive picker), `/supervise:model <provider/id>` (direct), or the settings panel. Model, sensitivity (including custom config), widget visibility, and payload-debug preference are saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
 
 ## Focus and Goal Discipline
 
@@ -176,7 +183,7 @@ The supervisor's reasoning is controlled by its **system prompt** — not the go
 | 5 | Built-in model-specific prompt | Hardcoded per model prefix (e.g. `deepseek`)
 | 6 | Built-in default template | Fallback |
 
-The active source is shown when you run `/supervise <outcome>` or `/supervise status`. Sources are reported as:
+The active source is shown when you run `/supervise <outcome>` or `/supervise:status`. Sources are reported as:
 - A file path (e.g. `.pi/deepseek-v4-flash-SUPERVISOR.md`) for file-based prompts
 - `built-in:deepseek` for built-in model-specific prompts
 - `built-in` for the default fallback prompt
@@ -251,6 +258,36 @@ The modelId is matched exactly (the full model ID string from your provider, cas
 - `claude-haiku-4-5-20251001` → looks for `claude-haiku-4-5-20251001-SUPERVISOR.md`
 
 #### Built-in model prompts
+
+The extension ships with built-in prompts for certain model families. These are matched by prefix (case-insensitive):
+
+### Learning project-specific supervisor rules from a session
+
+Use `/supervise:lesson-learned [optional guidance]` to derive a project-local supervisor prompt from the **current branch session**. The command:
+
+1. reads the current branch session transcript,
+2. incorporates any recorded supervisor interventions when present,
+3. starts from the built-in supervisor prompt for the currently selected supervisor model,
+4. generates a full `.pi/SUPERVISOR.md` proposal,
+5. opens that proposal in an interactive editor preview,
+6. writes `.pi/SUPERVISOR.md` only after you save/confirm the edited text.
+
+This works even if supervision was never active in the session — the command can still infer lessons from the full branch behavior.
+
+Use the optional trailing text to bias extraction toward a theme, for example:
+
+```text
+/supervise:lesson-learned focus on repeated exact-schema mistakes and missing CLI checks
+```
+
+The learned prompt is intended to capture:
+- project-specific failure modes,
+- project-specific verification checklist items,
+- project-specific steering style/tactics,
+
+while avoiding generic advice already covered by the built-in prompt.
+
+The generated file lives at `.pi/SUPERVISOR.md`, which already participates in the normal prompt override discovery order described above.
 
 The extension ships with built-in prompts for certain model families. These are matched by prefix (case-insensitive):
 

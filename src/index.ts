@@ -11,6 +11,7 @@
  *   /supervise:sensitivity <preset>   — adjust steering sensitivity
  *   /supervise:widget                 — toggle widget visibility
  *   /supervise:debug [status|on|off|toggle] — manage payload debug logging
+ *   /supervise:lesson-learned [optional guidance] — derive project-specific supervisor lessons from the current branch session and preview a .pi/SUPERVISOR.md proposal
  *
  * Legacy compatibility forms like `/supervise stop` and `/supervise model ...`
  * are still supported.
@@ -21,7 +22,7 @@ import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { parseLegacySuperviseInvocation } from "./command-routing.js";
 import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";
-import { analyze, buildSnapshot, loadSystemPrompt } from "./engine.js";
+import { analyze, buildSnapshot, loadBuiltinSystemPrompt, loadSystemPrompt } from "./engine.js";
 import {
   buildEvidenceNote,
   findLastEvidenceNoteContent,
@@ -30,6 +31,13 @@ import {
   SupervisorEvidenceTracker,
 } from "./evidence.js";
 import { formatSupervisorCheckpointLabel, mergeSupervisorTreeLabel } from "./labels.js";
+import {
+  generateSupervisorLessonsProposal,
+  getProjectSupervisorPromptPath,
+  loadExistingProjectSupervisorPrompt,
+  normalizeLessonProposalText,
+  persistProjectSupervisorPrompt,
+} from "./lesson-learned.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
 import type { Sensitivity, SensitivityConfig, SteeringDecision } from "./types.js";
 import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
@@ -465,6 +473,66 @@ export default function (pi: ExtensionAPI) {
     );
   };
 
+  const runLessonLearnedCommand = async (ctx: ExtensionContext, extraInstruction: string) => {
+    const defaults = resolveSettingsDefaults(ctx);
+    let provider = defaults.provider;
+    let modelId = defaults.modelId;
+
+    const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
+    if (!apiKey) {
+      ctx.ui.notify(`No API key for "${provider}/${modelId}" — pick a model with an available key.`, "warning");
+      const picked = await pickModel(ctx, provider, modelId);
+      if (!picked) return;
+      provider = picked.provider;
+      modelId = picked.id;
+    }
+
+    const existingProjectPrompt = loadExistingProjectSupervisorPrompt(ctx.cwd);
+    const basePrompt = loadBuiltinSystemPrompt(modelId).prompt;
+
+    const proposal = await generateSupervisorLessonsProposal({
+      ctx,
+      provider,
+      modelId,
+      basePrompt,
+      existingProjectPrompt,
+      extraInstruction,
+      debug: getDebugOptions(ctx),
+    });
+
+    if (proposal === null) {
+      ctx.ui.notify("Failed to generate a supervisor lesson proposal.", "error");
+      return;
+    }
+
+    const normalizedProposal = normalizeLessonProposalText(proposal);
+    if (!normalizedProposal.trim()) {
+      ctx.ui.notify("Generated supervisor lesson proposal was empty.", "warning");
+      return;
+    }
+
+    const targetPath = getProjectSupervisorPromptPath(ctx.cwd);
+    const edited = await ctx.ui.editor(`Review ${targetPath}`, normalizedProposal);
+    if (edited === undefined) {
+      ctx.ui.notify("Supervisor lesson proposal cancelled.", "info");
+      return;
+    }
+
+    const finalText = edited.trim();
+    if (!finalText) {
+      ctx.ui.notify("Refusing to write an empty .pi/SUPERVISOR.md file.", "warning");
+      return;
+    }
+
+    if (existingProjectPrompt !== null && existingProjectPrompt.trim() === finalText) {
+      ctx.ui.notify(`No changes to ${targetPath}.`, "info");
+      return;
+    }
+
+    persistProjectSupervisorPrompt(targetPath, finalText);
+    ctx.ui.notify(`Updated ${targetPath} from current session lessons.`, "info");
+  };
+
   const startSupervisionRun = async (ctx: ExtensionContext, outcome: string) => {
     const defaults = resolveSettingsDefaults(ctx);
     let provider = defaults.provider;
@@ -580,6 +648,13 @@ export default function (pi: ExtensionAPI) {
     description: "Show or change supervisor payload debug logging",
     handler: async (args, ctx) => {
       runDebugCommand(ctx, args?.trim() ?? "");
+    },
+  });
+
+  pi.registerCommand("supervise:lesson-learned", {
+    description: "Extract project-specific supervisor lessons from the current branch session and preview a .pi/SUPERVISOR.md update",
+    handler: async (args, ctx) => {
+      await runLessonLearnedCommand(ctx, args?.trim() ?? "");
     },
   });
 
