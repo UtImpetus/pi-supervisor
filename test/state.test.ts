@@ -191,15 +191,15 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getPreferences().sensitivityConfig).toEqual(customConfig);
   });
 
-  it("setPreferences stores additional defaults like widget visibility", () => {
+  it("setPreferences stores additional defaults like widget visibility and debug flags", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);
 
-    mgr.setPreferences({ widgetVisible: false });
+    mgr.setPreferences({ widgetVisible: false, debugPayloads: true });
 
-    expect(mgr.getPreferences()).toEqual({ widgetVisible: false });
+    expect(mgr.getPreferences()).toEqual({ widgetVisible: false, debugPayloads: true });
     expect(pi.appendEntry).toHaveBeenCalledTimes(1);
-    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { widgetVisible: false });
+    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { widgetVisible: false, debugPayloads: true });
   });
 
   it("loadFromSession picks the most recent supervisor state and preferences independently", () => {

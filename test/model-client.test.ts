@@ -1,20 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { createAgentSessionMock, reloadMock } = vi.hoisted(() => ({
+const { createAgentSessionMock, reloadMock, appendSupervisorPayloadLogMock, loaderOptions } = vi.hoisted(() => ({
   createAgentSessionMock: vi.fn(),
   reloadMock: vi.fn(),
+  appendSupervisorPayloadLogMock: vi.fn(),
+  loaderOptions: [] as any[],
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
   createAgentSession: createAgentSessionMock,
   DefaultResourceLoader: class {
-    constructor(_opts: any) {}
+    constructor(opts: any) {
+      loaderOptions.push(opts);
+    }
     reload = reloadMock;
   },
   getAgentDir: () => "/mock-agent-dir",
   SessionManager: {
     inMemory: () => ({ kind: "in-memory" }),
   },
+}));
+
+vi.mock("../src/debug.js", () => ({
+  appendSupervisorPayloadLog: appendSupervisorPayloadLogMock,
 }));
 
 import { callSupervisorModel, parseDecision } from "../src/model-client.js";
@@ -153,6 +161,7 @@ describe("callSupervisorModel — retries transient model call failures safely",
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    loaderOptions.length = 0;
     reloadMock.mockResolvedValue(undefined);
   });
 
@@ -232,5 +241,61 @@ describe("callSupervisorModel — retries transient model call failures safely",
     expect(abortedSession.abort).toHaveBeenCalledTimes(1);
     expect(abortedSession.dispose).toHaveBeenCalledTimes(1);
     expect(abortedSession.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs supervisor payload debug records when enabled", async () => {
+    const session = makeSession({
+      deltas: [`{"action":"continue","reasoning":"ok","confidence":0.8}`],
+    });
+    createAgentSessionMock.mockResolvedValueOnce({ session });
+
+    const out = await callSupervisorModel(
+      makeCtx(),
+      "anthropic",
+      "claude-haiku-4-5",
+      "system prompt",
+      "user prompt",
+      undefined,
+      undefined,
+      { enabled: true, logPath: "/tmp/supervisor-payload.log" },
+    );
+
+    expect(out).toMatchObject({ action: "continue", reasoning: "ok" });
+    expect(loaderOptions[0]?.extensionFactories).toHaveLength(1);
+    expect(appendSupervisorPayloadLogMock).toHaveBeenCalledWith(
+      "/tmp/supervisor-payload.log",
+      expect.objectContaining({
+        type: "supervisor_model_call",
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+        systemPrompt: "system prompt",
+        userPrompt: "user prompt",
+        ok: true,
+      }),
+    );
+  });
+
+  it("ignores debug logging failures instead of breaking supervisor analysis", async () => {
+    appendSupervisorPayloadLogMock.mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+    const session = makeSession({
+      deltas: [`{"action":"done","reasoning":"ok","confidence":0.9}`],
+    });
+    createAgentSessionMock.mockResolvedValueOnce({ session });
+
+    const out = await callSupervisorModel(
+      makeCtx(),
+      "anthropic",
+      "claude-haiku-4-5",
+      "system prompt",
+      "user prompt",
+      undefined,
+      undefined,
+      { enabled: true, logPath: "/tmp/supervisor-payload.log" },
+    );
+
+    expect(out).toMatchObject({ action: "done", reasoning: "ok", confidence: 0.9 });
+    expect(appendSupervisorPayloadLogMock).toHaveBeenCalledTimes(1);
   });
 });

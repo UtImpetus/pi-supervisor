@@ -21,6 +21,7 @@ export interface WorkspaceSupervisorConfig {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   widgetVisible?: boolean;
+  debugPayloads?: boolean;
 }
 
 function isSensitivity(value: unknown): value is Sensitivity {
@@ -60,6 +61,10 @@ export function loadWorkspaceConfig(cwd: string): WorkspaceSupervisorConfig | nu
 
     if (typeof parsed.widgetVisible === "boolean") {
       config.widgetVisible = parsed.widgetVisible;
+    }
+
+    if (typeof parsed.debugPayloads === "boolean") {
+      config.debugPayloads = parsed.debugPayloads;
     }
 
     return Object.keys(config).length > 0 ? config : null;
@@ -107,6 +112,10 @@ export function saveWorkspaceConfig(cwd: string, patch: WorkspaceSupervisorConfi
 
     if (typeof merged.widgetVisible !== "boolean") {
       delete merged.widgetVisible;
+    }
+
+    if (typeof merged.debugPayloads !== "boolean") {
+      delete merged.debugPayloads;
     }
 
     writeFileSync(

@@ -96,6 +96,7 @@ export interface SupervisorPreferences {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   widgetVisible?: boolean;
+  debugPayloads?: boolean;
 }
 
 /** Decision returned by the supervisor LLM */

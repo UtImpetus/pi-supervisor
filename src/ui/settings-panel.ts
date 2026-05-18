@@ -42,6 +42,7 @@ export interface SettingsDefaults {
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   widgetVisible: boolean;
+  debugPayloads?: boolean;
 }
 
 export interface SettingsResult {
@@ -49,7 +50,17 @@ export interface SettingsResult {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   widget?: boolean;
+  debugPayloads?: boolean;
   action?: "stop";
+}
+
+export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
+  return (
+    draft.model !== undefined ||
+    draft.sensitivity !== undefined ||
+    draft.widget !== undefined ||
+    draft.debugPayloads !== undefined
+  );
 }
 
 /**
@@ -66,6 +77,7 @@ export async function openSettings(
   const currentSensitivity = state?.sensitivity ?? defaults.sensitivity;
   const currentConfig = resolveSensitivityConfig(currentSensitivity, state?.sensitivityConfig ?? defaults.sensitivityConfig);
   const currentWidgetVisible = defaults.widgetVisible;
+  const currentDebugPayloads = defaults.debugPayloads ?? false;
   const isActive = state?.active === true;
 
   // Mutable draft state
@@ -76,15 +88,9 @@ export async function openSettings(
   const draft: SettingsResult = {};
 
   return ctx.ui.custom<SettingsResult | null>((tui, theme, _kb, done) => {
-    const hasDraftChanges = () => (
-      draft.model !== undefined ||
-      draft.sensitivity !== undefined ||
-      draft.widget !== undefined
-    );
-
     const submit = (action?: "stop") => {
       if (action) draft.action = action;
-      if (hasDraftChanges() || action) {
+      if (hasSettingsDraftChanges(draft) || action) {
         done({ ...draft });
       } else {
         done({});
@@ -166,6 +172,13 @@ export async function openSettings(
         description: "Show/hide the supervisor widget in the footer",
         currentValue: currentWidgetVisible ? "visible" : "hidden",
         values: ["visible", "hidden"],
+      },
+      {
+        id: "debugPayloads",
+        label: "Payload Debug",
+        description: "Log supervisor model prompts/payloads to .pi/supervisor-payload.log",
+        currentValue: currentDebugPayloads ? "enabled" : "disabled",
+        values: ["enabled", "disabled"],
       },
     ];
 
@@ -282,6 +295,8 @@ export async function openSettings(
           settingsList.invalidate();
         } else if (id === "widget") {
           draft.widget = newValue === "visible";
+        } else if (id === "debugPayloads") {
+          draft.debugPayloads = newValue === "enabled";
         } else if (id === "apply" && newValue === "apply") {
           submit();
         } else if (id === "cancel" && newValue === "discard") {

@@ -2,17 +2,34 @@
  * pi-supervisor — A pi extension that supervises the chat and steers it toward a defined outcome.
  *
  * Commands:
- *   /supervise <outcome>          — start supervising
- *   /supervise stop               — stop supervision
- *   /supervise status             — show current status widget
- *   /supervise model              — open interactive model picker (pi-style)
- *   /supervise model <p/modelId>  — set model directly (scripting)
- *   /supervise sensitivity <low|medium|high|custom> — adjust steering sensitivity
+ *   /supervise <outcome>              — start supervising
+ *   /supervise                        — open supervisor settings
+ *   /supervise:settings               — open supervisor settings
+ *   /supervise:status                 — show active supervisor status/settings
+ *   /supervise:stop                   — stop supervision
+ *   /supervise:model [p/modelId]      — pick or set the supervisor model
+ *   /supervise:sensitivity <preset>   — adjust steering sensitivity
+ *   /supervise:widget                 — toggle widget visibility
+ *   /supervise:debug [status|on|off|toggle] — manage payload debug logging
+ *
+ * Legacy compatibility forms like `/supervise stop` and `/supervise model ...`
+ * are still supported.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
-import { analyze, loadSystemPrompt } from "./engine.js";
+import { parseLegacySuperviseInvocation } from "./command-routing.js";
+import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";
+import { analyze, buildSnapshot, loadSystemPrompt } from "./engine.js";
+import {
+  buildEvidenceNote,
+  findLastEvidenceNoteContent,
+  getEvidenceEntryType,
+  getEvidenceMessageType,
+  SupervisorEvidenceTracker,
+} from "./evidence.js";
+import { formatSupervisorCheckpointLabel, mergeSupervisorTreeLabel } from "./labels.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
 import type { Sensitivity, SensitivityConfig, SteeringDecision } from "./types.js";
 import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
@@ -45,7 +62,9 @@ const MAX_IDLE_STEERS = 5;
 
 export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
+  const evidence = new SupervisorEvidenceTracker();
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
+  let lastEvidenceNoteContent: string | null = null;
 
   const resolveSettingsDefaults = (ctx: ExtensionContext) => {
     const s = state.getState();
@@ -69,7 +88,62 @@ export default function (pi: ExtensionAPI) {
       sensitivity,
       sensitivityConfig: resolveSensitivityConfig(sensitivity, sensitivityConfig),
       widgetVisible: preferences.widgetVisible ?? workspaceConfig?.widgetVisible ?? true,
+      debugPayloads: preferences.debugPayloads ?? workspaceConfig?.debugPayloads ?? false,
     };
+  };
+
+  const getDebugOptions = (ctx: ExtensionContext): SupervisorPayloadDebugOptions | undefined => {
+    const defaults = resolveSettingsDefaults(ctx);
+    if (!defaults.debugPayloads) return undefined;
+    return { enabled: true, logPath: getSupervisorPayloadLogPath(ctx.cwd) };
+  };
+
+  const notifyDebugStatus = (ctx: ExtensionContext, enabled: boolean, saved: boolean) => {
+    const logPath = getSupervisorPayloadLogPath(ctx.cwd);
+    ctx.ui.notify(
+      `Supervisor payload debug logging ${enabled ? "enabled" : "disabled"}: ${logPath}` + (saved ? " · saved to .pi/" : ""),
+      "info"
+    );
+  };
+
+  const persistEvidenceSnapshot = () => {
+    if (!state.isActive()) return;
+    const snapshot = evidence.createSnapshot();
+    if (snapshot.items.length === 0) return;
+    pi.appendEntry(getEvidenceEntryType(), snapshot);
+  };
+
+  const resetRunEvidence = () => {
+    evidence.reset();
+    lastEvidenceNoteContent = null;
+  };
+
+  const stopSupervision = () => {
+    state.stop();
+    idleSteers = 0;
+    resetRunEvidence();
+  };
+
+  const labelCurrentLeaf = (ctx: ExtensionContext, tag: string) => {
+    const leafId = ctx.sessionManager.getLeafId();
+    if (!leafId) return;
+    const existing = ctx.sessionManager.getLabel(leafId);
+    pi.setLabel(leafId, mergeSupervisorTreeLabel(existing, tag));
+  };
+
+  const emitEvidenceNote = (
+    note: ReturnType<typeof buildEvidenceNote>,
+  ) => {
+    if (!note) return;
+    if (note.content === lastEvidenceNoteContent) return;
+    lastEvidenceNoteContent = note.content;
+
+    pi.sendMessage({
+      customType: getEvidenceMessageType(),
+      content: note.content,
+      display: true,
+      details: note.details,
+    });
   };
 
   const applySettingsResult = (ctx: ExtensionContext, result: SettingsResult | null) => {
@@ -108,19 +182,57 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
+    if (result.debugPayloads !== undefined) {
+      state.setPreferences({ debugPayloads: result.debugPayloads });
+      const saved = saveWorkspaceConfig(ctx.cwd, { debugPayloads: result.debugPayloads });
+      notifyDebugStatus(ctx, result.debugPayloads, saved);
+    }
+
     if (result.action === "stop" && state.isActive()) {
-      state.stop();
-      idleSteers = 0;
+      stopSupervision();
       ctx.ui.notify("Supervisor stopped.", "info");
     }
 
     updateUI(ctx, state.getState());
   };
 
+  pi.registerMessageRenderer(getEvidenceMessageType(), (message, { expanded }, theme) => {
+    const details = (message.details ?? {}) as { warnings?: string[]; evidence?: string[]; agentIsIdle?: boolean };
+    const warnings = Array.isArray(details.warnings) ? details.warnings : [];
+    const evidenceLines = Array.isArray(details.evidence) ? details.evidence : [];
+
+    let text = `${theme.fg("warning", "[SUPERVISOR EVIDENCE]")} ${message.content}`;
+    if (expanded && warnings.length > 0) {
+      text += `\n${theme.fg("dim", "Warnings:")}`;
+      for (const warning of warnings) text += `\n${theme.fg("warning", `- ${warning}`)}`;
+    }
+    if (expanded && evidenceLines.length > 0) {
+      text += `\n${theme.fg("dim", "Recent evidence:")}`;
+      for (const line of evidenceLines) text += `\n${theme.fg("muted", `- ${line}`)}`;
+    }
+    if (expanded) {
+      text += `\n${theme.fg("dim", `Context: ${details.agentIsIdle ? "idle check" : "mid-turn check"}`)}`;
+    }
+
+    const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
+    box.addChild(new Text(text, 0, 0));
+    return box;
+  });
+
   // ---- Session lifecycle: restore state ----
 
   const onSessionLoad = (ctx: ExtensionContext) => {
     state.loadFromSession(ctx);
+    idleSteers = 0;
+
+    const activeState = state.getState();
+    if (activeState?.active) {
+      evidence.hydrateFromSession(ctx, activeState.startedAt);
+      lastEvidenceNoteContent = findLastEvidenceNoteContent(ctx.sessionManager.getBranch(), activeState.startedAt);
+    } else {
+      resetRunEvidence();
+    }
+
     setWidgetVisible(resolveSettingsDefaults(ctx).widgetVisible);
     updateUI(ctx, state.getState());
   };
@@ -130,6 +242,15 @@ export default function (pi: ExtensionAPI) {
   // events). session_tree remains a separate event for tree-view navigation.
   pi.on("session_start", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
+
+  pi.on("tool_result", async (event) => {
+    if (!state.isActive()) return;
+    evidence.recordToolResult(event);
+  });
+
+  pi.on("session_compact", async () => {
+    persistEvidenceSnapshot();
+  });
 
   // ---- Mid-turn steering: medium, high, and custom sensitivity ----
   // turn_end fires after each LLM sub-turn (tool-call cycle) while the agent is still running.
@@ -149,7 +270,16 @@ export default function (pi: ExtensionAPI) {
 
     let decision: SteeringDecision;
     try {
-      decision = await analyze(ctx, s, false /* agent still working */, false /* can't stagnate mid-turn */);
+      decision = await analyze(
+        ctx,
+        s,
+        false /* agent still working */,
+        false /* can't stagnate mid-turn */,
+        undefined,
+        undefined,
+        evidence.getRecent(),
+        getDebugOptions(ctx),
+      );
     } catch {
       return;
     }
@@ -162,6 +292,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: decision.reasoning,
         timestamp: Date.now(),
       });
+      labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("steer", state.getState()?.interventions.length));
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
       pi.sendUserMessage(decision.message, { deliverAs: "steer" });
     }
@@ -176,16 +307,26 @@ export default function (pi: ExtensionAPI) {
 
     state.incrementTurnCount();
     const s = state.getState()!;
+    const resolvedSensitivity = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
 
     // Stagnation: too many steers with no "done" → final lenient evaluation
     const stagnating = idleSteers >= MAX_IDLE_STEERS;
 
     updateUI(ctx, s, { type: "analyzing", turn: s.turnCount });
 
-    const decision = await analyze(ctx, s, true /* always idle at agent_end */, stagnating, undefined, (accumulated) => {
-      const thinking = extractThinking(accumulated);
-      updateUI(ctx, state.getState()!, { type: "analyzing", turn: s.turnCount, thinking });
-    });
+    const decision = await analyze(
+      ctx,
+      s,
+      true /* always idle at agent_end */,
+      stagnating,
+      undefined,
+      (accumulated) => {
+        const thinking = extractThinking(accumulated);
+        updateUI(ctx, state.getState()!, { type: "analyzing", turn: s.turnCount, thinking });
+      },
+      evidence.getRecent(),
+      getDebugOptions(ctx),
+    );
 
     if (decision.action === "steer" && decision.message) {
       idleSteers++;
@@ -195,165 +336,250 @@ export default function (pi: ExtensionAPI) {
         reasoning: decision.reasoning,
         timestamp: Date.now(),
       });
+      labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("steer", state.getState()?.interventions.length));
+      const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
+      emitEvidenceNote(note);
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
       pi.sendUserMessage(decision.message);
     } else if (decision.action === "done") {
       idleSteers = 0;
+      labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("done", s.turnCount));
       updateUI(ctx, state.getState(), { type: "done" });
       const suffix = stagnating ? ` (stopped after ${MAX_IDLE_STEERS} steering attempts — goal substantially achieved)` : "";
       ctx.ui.notify(`Supervisor: outcome achieved! "${s.outcome}"${suffix}`, "info");
-      state.stop();
+      stopSupervision();
       updateUI(ctx, state.getState());
     } else {
       updateUI(ctx, state.getState(), { type: "watching" });
     }
   });
 
-  // ---- /supervise command ----
+  // ---- /supervise commands ----
+
+  const openSupervisorSettingsPanel = async (ctx: ExtensionContext) => {
+    const s = state.getState();
+    const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
+    applySettingsResult(ctx, result);
+  };
+
+  const runWidgetCommand = (ctx: ExtensionContext) => {
+    const visible = toggleWidget();
+    state.setPreferences({ widgetVisible: visible });
+    const saved = saveWorkspaceConfig(ctx.cwd, { widgetVisible: visible });
+    updateUI(ctx, state.getState());
+    ctx.ui.notify(`Supervisor widget ${visible ? "shown" : "hidden"}.` + (saved ? " · saved to .pi/" : ""), "info");
+  };
+
+  const runDebugCommand = (ctx: ExtensionContext, rawArg: string) => {
+    const arg = rawArg.trim().toLowerCase();
+    const current = resolveSettingsDefaults(ctx).debugPayloads;
+
+    if (!arg || arg === "status") {
+      notifyDebugStatus(ctx, current, false);
+      return;
+    }
+
+    let enabled: boolean;
+    if (arg === "on" || arg === "enable" || arg === "enabled") {
+      enabled = true;
+    } else if (arg === "off" || arg === "disable" || arg === "disabled") {
+      enabled = false;
+    } else if (arg === "toggle") {
+      enabled = !current;
+    } else {
+      ctx.ui.notify("Usage: /supervise:debug [status|on|off|toggle]", "warning");
+      return;
+    }
+
+    state.setPreferences({ debugPayloads: enabled });
+    const saved = saveWorkspaceConfig(ctx.cwd, { debugPayloads: enabled });
+    notifyDebugStatus(ctx, enabled, saved);
+  };
+
+  const runStopCommand = (ctx: ExtensionContext) => {
+    if (!state.isActive()) {
+      ctx.ui.notify("Supervisor is not active.", "warning");
+      return;
+    }
+    stopSupervision();
+    updateUI(ctx, state.getState());
+    ctx.ui.notify("Supervisor stopped.", "info");
+  };
+
+  const runStatusCommand = async (ctx: ExtensionContext) => {
+    const s = state.getState();
+    if (!s) {
+      ctx.ui.notify("No active supervision. Use /supervise <outcome> to start.", "info");
+      return;
+    }
+    await openSupervisorSettingsPanel(ctx);
+  };
+
+  const runModelCommand = async (ctx: ExtensionContext, spec: string) => {
+    const defaults = resolveSettingsDefaults(ctx);
+
+    if (!spec) {
+      const picked = await pickModel(ctx, defaults.provider, defaults.modelId);
+      if (!picked) return;
+
+      const provider = picked.provider;
+      const modelId = picked.id;
+      state.setModel(provider, modelId);
+      const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
+      updateUI(ctx, state.getState());
+      ctx.ui.notify(
+        `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+          (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+      return;
+    }
+
+    const slashIdx = spec.indexOf("/");
+    const provider = slashIdx === -1 ? defaults.provider : spec.slice(0, slashIdx);
+    const modelId = slashIdx === -1 ? spec : spec.slice(slashIdx + 1);
+
+    state.setModel(provider, modelId);
+    const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
+    updateUI(ctx, state.getState());
+    ctx.ui.notify(
+      `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+        (saved ? " · saved to .pi/" : ""),
+      "info"
+    );
+  };
+
+  const runSensitivityCommand = (ctx: ExtensionContext, rawLevel: string) => {
+    const level = rawLevel.trim() as Sensitivity;
+    if (level !== "low" && level !== "medium" && level !== "high" && level !== "custom") {
+      ctx.ui.notify("Usage: /supervise:sensitivity <low|medium|high|custom>", "warning");
+      return;
+    }
+    state.setSensitivity(level, level === "custom" ? SENSITIVITY_PRESETS.medium : undefined);
+    const saved = saveWorkspaceConfig(ctx.cwd, { sensitivity: level });
+    updateUI(ctx, state.getState());
+    ctx.ui.notify(
+      `Supervisor sensitivity set to "${level}"${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+        (saved ? " · saved to .pi/" : ""),
+      "info"
+    );
+  };
+
+  const startSupervisionRun = async (ctx: ExtensionContext, outcome: string) => {
+    const defaults = resolveSettingsDefaults(ctx);
+    let provider = defaults.provider;
+    let modelId = defaults.modelId;
+    const sensitivity = defaults.sensitivity;
+
+    const preferences = state.getPreferences();
+    const workspaceConfig = loadWorkspaceConfig(ctx.cwd);
+    const hasConfiguredModel = Boolean(preferences.provider && preferences.modelId) || Boolean(workspaceConfig?.provider && workspaceConfig?.modelId);
+    if (!hasConfiguredModel) {
+      const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
+      if (!apiKey) {
+        ctx.ui.notify(`No API key for "${provider}/${modelId}" — pick a model with an available key.`, "warning");
+        const picked = await pickModel(ctx, provider, modelId);
+        if (!picked) return;
+        provider = picked.provider;
+        modelId = picked.id;
+      }
+    }
+
+    const sensitivityConfig = resolveSensitivityConfig(sensitivity, defaults.sensitivityConfig);
+    state.start(outcome, provider, modelId, sensitivity, sensitivityConfig);
+    idleSteers = 0;
+    resetRunEvidence();
+    labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
+    updateUI(ctx, state.getState());
+
+    const { source } = loadSystemPrompt(ctx.cwd, modelId);
+    const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
+    ctx.ui.notify(
+      `Supervisor active: "${outcome.slice(0, 50)}${outcome.length > 50 ? "…" : ""}" | ${provider}/${modelId} | ${promptLabel}`,
+      "info"
+    );
+  };
 
   pi.registerCommand("supervise", {
     description: "Supervise the chat toward a desired outcome (/supervise <outcome>)",
     handler: async (args, ctx) => {
-      const trimmed = args?.trim() ?? "";
+      const parsed = parseLegacySuperviseInvocation(args?.trim() ?? "");
 
-      // --- subcommands ---
-
-      if (trimmed === "widget") {
-        const visible = toggleWidget();
-        state.setPreferences({ widgetVisible: visible });
-        const saved = saveWorkspaceConfig(ctx.cwd, { widgetVisible: visible });
-        updateUI(ctx, state.getState());
-        ctx.ui.notify(`Supervisor widget ${visible ? "shown" : "hidden"}.` + (saved ? " · saved to .pi/" : ""), "info");
-        return;
-      }
-
-      if (trimmed === "stop") {
-        if (!state.isActive()) {
-          ctx.ui.notify("Supervisor is not active.", "warning");
+      switch (parsed.type) {
+        case "settings":
+          await openSupervisorSettingsPanel(ctx);
           return;
-        }
-        state.stop();
-        idleSteers = 0;
-        updateUI(ctx, state.getState());
-        ctx.ui.notify("Supervisor stopped.", "info");
-        return;
-      }
-
-      if (trimmed === "status") {
-        const s = state.getState();
-        if (!s) {
-          ctx.ui.notify("No active supervision. Use /supervise <outcome> to start.", "info");
+        case "widget":
+          runWidgetCommand(ctx);
           return;
-        }
-        const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
-        applySettingsResult(ctx, result);
-        return;
-      }
-
-      if (trimmed === "model" || trimmed.startsWith("model ")) {
-        const spec = trimmed.slice(5).trim(); // "" when no args
-        const defaults = resolveSettingsDefaults(ctx);
-
-        if (!spec) {
-          // No args → open the interactive pi-style model picker
-          const picked = await pickModel(ctx, defaults.provider, defaults.modelId);
-          if (!picked) return; // user cancelled
-
-          const provider = picked.provider;
-          const modelId = picked.id;
-
-          state.setModel(provider, modelId);
-          const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
-          updateUI(ctx, state.getState());
-          ctx.ui.notify(
-            `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
-              (saved ? " · saved to .pi/" : ""),
-            "info"
-          );
+        case "debug":
+          runDebugCommand(ctx, parsed.arg);
           return;
-        }
-
-        // Args provided → direct assignment (for scripting)
-        const slashIdx = spec.indexOf("/");
-        let provider: string;
-        let modelId: string;
-        if (slashIdx === -1) {
-          provider = defaults.provider;
-          modelId = spec;
-        } else {
-          provider = spec.slice(0, slashIdx);
-          modelId = spec.slice(slashIdx + 1);
-        }
-
-        state.setModel(provider, modelId);
-        const saved = saveWorkspaceConfig(ctx.cwd, { provider, modelId });
-        updateUI(ctx, state.getState());
-        ctx.ui.notify(
-          `Supervisor model set to ${provider}/${modelId}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
-            (saved ? " · saved to .pi/" : ""),
-          "info"
-        );
-        return;
-      }
-
-      if (trimmed.startsWith("sensitivity ")) {
-        const level = trimmed.slice(12).trim() as Sensitivity;
-        if (level !== "low" && level !== "medium" && level !== "high" && level !== "custom") {
-          ctx.ui.notify("Usage: /supervise sensitivity <low|medium|high|custom>", "warning");
+        case "stop":
+          runStopCommand(ctx);
           return;
-        }
-        state.setSensitivity(level, level === "custom" ? SENSITIVITY_PRESETS.medium : undefined);
-        const saved = saveWorkspaceConfig(ctx.cwd, { sensitivity: level });
-        updateUI(ctx, state.getState());
-        ctx.ui.notify(
-          `Supervisor sensitivity set to "${level}"${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
-            (saved ? " · saved to .pi/" : ""),
-          "info"
-        );
-        return;
+        case "status":
+          await runStatusCommand(ctx);
+          return;
+        case "model":
+          await runModelCommand(ctx, parsed.spec);
+          return;
+        case "sensitivity":
+          runSensitivityCommand(ctx, parsed.level);
+          return;
+        case "start":
+          await startSupervisionRun(ctx, parsed.outcome);
+          return;
       }
+    },
+  });
 
-      // --- interactive settings panel ---
+  pi.registerCommand("supervise:settings", {
+    description: "Open supervisor settings",
+    handler: async (_args, ctx) => {
+      await openSupervisorSettingsPanel(ctx);
+    },
+  });
 
-      if (!trimmed || trimmed === "settings") {
-        const s = state.getState();
-        const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
-        applySettingsResult(ctx, result);
-        return;
-      }
+  pi.registerCommand("supervise:status", {
+    description: "Show active supervisor status/settings",
+    handler: async (_args, ctx) => {
+      await runStatusCommand(ctx);
+    },
+  });
 
-      // Resolve settings: session preferences → workspace config → active session model → built-in defaults
-      const defaults = resolveSettingsDefaults(ctx);
-      let provider = defaults.provider;
-      let modelId = defaults.modelId;
-      const sensitivity = defaults.sensitivity;
+  pi.registerCommand("supervise:stop", {
+    description: "Stop active supervision",
+    handler: async (_args, ctx) => {
+      runStopCommand(ctx);
+    },
+  });
 
-      // Only prompt for a model if none has been configured yet
-      const preferences = state.getPreferences();
-      const workspaceConfig = loadWorkspaceConfig(ctx.cwd);
-      const hasConfiguredModel = Boolean(preferences.provider && preferences.modelId) || Boolean(workspaceConfig?.provider && workspaceConfig?.modelId);
-      if (!hasConfiguredModel) {
-        const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider);
-        if (!apiKey) {
-          ctx.ui.notify(`No API key for "${provider}/${modelId}" — pick a model with an available key.`, "warning");
-          const picked = await pickModel(ctx, provider, modelId);
-          if (!picked) return; // user cancelled
-          provider = picked.provider;
-          modelId = picked.id;
-        }
-      }
+  pi.registerCommand("supervise:model", {
+    description: "Set or pick the supervisor model",
+    handler: async (args, ctx) => {
+      await runModelCommand(ctx, args?.trim() ?? "");
+    },
+  });
 
-      const sensitivityConfig = resolveSensitivityConfig(sensitivity, defaults.sensitivityConfig);
-      state.start(trimmed, provider, modelId, sensitivity, sensitivityConfig);
-      idleSteers = 0;
-      updateUI(ctx, state.getState());
+  pi.registerCommand("supervise:sensitivity", {
+    description: "Set supervisor sensitivity",
+    handler: async (args, ctx) => {
+      runSensitivityCommand(ctx, args?.trim() ?? "");
+    },
+  });
 
-      const { source } = loadSystemPrompt(ctx.cwd, modelId);
-      const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
-      ctx.ui.notify(
-        `Supervisor active: "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "…" : ""}" | ${provider}/${modelId} | ${promptLabel}`,
-        "info"
-      );
+  pi.registerCommand("supervise:widget", {
+    description: "Toggle supervisor widget visibility",
+    handler: async (_args, ctx) => {
+      runWidgetCommand(ctx);
+    },
+  });
+
+  pi.registerCommand("supervise:debug", {
+    description: "Show or change supervisor payload debug logging",
+    handler: async (args, ctx) => {
+      runDebugCommand(ctx, args?.trim() ?? "");
     },
   });
 
@@ -430,6 +656,8 @@ export default function (pi: ExtensionAPI) {
 
       state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig);
       idleSteers = 0;
+      resetRunEvidence();
+      labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
       updateUI(ctx, state.getState());
 
       const { source } = loadSystemPrompt(ctx.cwd, modelId);

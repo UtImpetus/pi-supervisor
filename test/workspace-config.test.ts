@@ -34,6 +34,7 @@ describe("workspace-config", () => {
           modelId: "claude-haiku-4-5",
           sensitivity: "high",
           widgetVisible: false,
+          debugPayloads: true,
         }),
       );
 
@@ -42,6 +43,7 @@ describe("workspace-config", () => {
         modelId: "claude-haiku-4-5",
         sensitivity: "high",
         widgetVisible: false,
+        debugPayloads: true,
       });
     });
 
@@ -103,11 +105,11 @@ describe("workspace-config", () => {
 
     it("writes partial config when .pi/ exists", () => {
       mkdirSync(join(cwd, ".pi"));
-      expect(saveWorkspaceConfig(cwd, { sensitivity: "medium", widgetVisible: false })).toBe(true);
+      expect(saveWorkspaceConfig(cwd, { sensitivity: "medium", widgetVisible: false, debugPayloads: true })).toBe(true);
 
       const written = readFileSync(join(cwd, ".pi", "supervisor-config.json"), "utf-8");
-      expect(JSON.parse(written)).toEqual({ sensitivity: "medium", widgetVisible: false });
-      expect(loadWorkspaceConfig(cwd)).toEqual({ sensitivity: "medium", widgetVisible: false });
+      expect(JSON.parse(written)).toEqual({ sensitivity: "medium", widgetVisible: false, debugPayloads: true });
+      expect(loadWorkspaceConfig(cwd)).toEqual({ sensitivity: "medium", widgetVisible: false, debugPayloads: true });
     });
 
     it("saves custom sensitivity config", () => {
@@ -141,13 +143,14 @@ describe("workspace-config", () => {
     it("merges patches without losing other saved fields", () => {
       mkdirSync(join(cwd, ".pi"));
       expect(saveWorkspaceConfig(cwd, { provider: "openai", modelId: "gpt-5" })).toBe(true);
-      expect(saveWorkspaceConfig(cwd, { sensitivity: "high", widgetVisible: true })).toBe(true);
+      expect(saveWorkspaceConfig(cwd, { sensitivity: "high", widgetVisible: true, debugPayloads: true })).toBe(true);
 
       expect(loadWorkspaceConfig(cwd)).toEqual({
         provider: "openai",
         modelId: "gpt-5",
         sensitivity: "high",
         widgetVisible: true,
+        debugPayloads: true,
       });
     });
   });

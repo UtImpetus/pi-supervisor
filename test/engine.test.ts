@@ -87,7 +87,8 @@ describe("loadSystemPrompt", () => {
     const { prompt, source } = loadSystemPrompt(cwd, "claude-haiku-4-5-20251001");
     expect(prompt).toContain("supervisor monitoring a coding AI assistant");
     expect(prompt).not.toContain("DeepSeek");
-    expect(prompt).not.toContain("public functions/APIs are importable");
+    expect(prompt).toContain("Prefer concrete tool evidence over assistant claims");
+    expect(prompt).toContain("CLAIM / EVIDENCE WARNINGS");
     expect(source).toBe("built-in");
   });
 
@@ -95,11 +96,15 @@ describe("loadSystemPrompt", () => {
     const generic = loadSystemPrompt(cwd, "claude-haiku-4-5-20251001");
     const deepseek = loadSystemPrompt(cwd, "deepseek-v4-flash");
 
-    expect(generic.prompt).not.toContain("public functions/APIs are importable");
-    expect(deepseek.prompt).toContain("required deliverables are complete");
-    expect(deepseek.prompt).toContain("When the outcome requires public functions, commands,");
-    expect(deepseek.prompt).toContain("routes, exports, entry points, files, or config-visible behavior");
-    expect(deepseek.prompt).not.toContain("All required public functions are exposed on the public API surface");
+    expect(generic.prompt).not.toContain("SELF-TEST MIRRORING");
+    expect(generic.prompt).not.toContain("public API surface");
+    expect(generic.prompt).toContain("Prefer concrete tool evidence over assistant claims");
+    expect(generic.prompt).toContain("Passing the agent's own tests is helpful but not sufficient");
+    expect(deepseek.prompt).toContain("SELF-TEST MIRRORING");
+    expect(deepseek.prompt).toContain("INVALID-INPUT LENIENCY");
+    expect(deepseek.prompt).toContain("public API surface");
+    expect(deepseek.prompt).toContain("real JSON-facing input shape");
+    expect(deepseek.prompt).toContain("tests alone does NOT prove the contract is satisfied");
     expect(deepseek.source).toBe("built-in:deepseek");
   });
 

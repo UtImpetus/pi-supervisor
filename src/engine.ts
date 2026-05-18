@@ -17,6 +17,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { SupervisorPayloadDebugOptions } from "./debug.js";
+import type { SupervisorEvidenceItem } from "./evidence.js";
+import { summarizeEvidenceForPrompt } from "./evidence.js";
 import { callSupervisorModel } from "./model-client.js";
 import type { ConversationMessage, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
 import { resolveSensitivityConfig } from "./types.js";
@@ -57,10 +60,18 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
 - Never repeat a steering message that had no effect — escalate or change approach.
 - A good steer answers the agent's question OR redirects to the missing piece of the outcome.
 - If the agent is taking shortcuts to satisfy the goal without properly achieving it, always steer and remind it not to take shortcuts.
+- Prefer concrete tool evidence over assistant claims. If recent tool evidence or claim/evidence warnings
+  contradict the assistant's summary, trust the evidence.
+- Treat "CLAIM / EVIDENCE WARNINGS" as high-signal. If they indicate missing verification for a required
+  external surface or contract, prefer "steer" over "done".
 
 "done" CRITERIA: The core outcome is complete and functional. Minor polish, style tweaks, or
 optional improvements do NOT block "done". Prefer stopping when the goal is substantially
 achieved rather than looping forever chasing perfection.
+If the outcome requires externally visible behavior (such as CLI behavior, public imports/exports,
+exact output shape, or invalid-input handling), do NOT return "done" unless recent evidence shows
+those surfaces were actually checked. Passing the agent's own tests is helpful but not sufficient
+when the required contract verification is still missing.
 
 Respond ONLY with valid JSON — no prose, no markdown fences.
 Response schema (strict JSON):
@@ -96,23 +107,32 @@ DeepSeek-powered agents frequently exhibit these failure modes. Watch for them a
 
 2. EXTERNAL INTERFACE / EXPOSURE: DeepSeek agents often implement the internal change but forget to
    wire up the promised external surface. When the outcome requires public functions, commands,
-   routes, exports, entry points, files, or config-visible behavior, verify the deliverable is
-   actually reachable through that surface before saying "done".
+   routes, exports, entry points, files, imports, package-level APIs, or config-visible behavior,
+   verify the deliverable is actually reachable through that surface before saying "done".
 
 3. FIELD NAMING INCONSISTENCY: DeepSeek agents sometimes use abbreviated field names (col, dir, desc)
    when the spec uses full names (column, direction, description). If the outcome or examples specify
    exact field names, steer the agent to match them exactly.
 
 4. EXTRA FIELDS IN OUTPUT: DeepSeek agents add convenience fields that the spec doesn't define
-   (e.g., a "file" key in each microblog entry). If the outcome specifies a schema, the output must
-   contain ONLY the specified fields — no extras, no missing ones.
+   (e.g., a "file" key in each item). If the outcome specifies a schema, the output must contain ONLY
+   the specified fields — no extras, no missing ones.
 
-5. CASE MISMATCH IN ENUMS: DeepSeek agents change the casing of enum values (e.g., capitalizing
-   "Active" when the spec says "active", or using full names vs abbreviations).
-   Match the exact casing and naming from the outcome/examples.
+5. CASE MISMATCH / CANONICALIZATION DRIFT: DeepSeek agents change the casing or textual form of
+   externally visible values (for example \`Z\` → \`+00:00\`, \`active\` → \`Active\`, or adding/removing
+   leading blank lines). Match the exact casing, spelling, and canonical text form from the outcome/examples.
 
-6. RETURN TYPE VIOLATIONS: DeepSeek agents return dicts when the spec says string, or arrays when
-   the spec says scalar. Verify return types match the spec exactly.
+6. RETURN TYPE / INPUT SHAPE VIOLATIONS: DeepSeek agents return dicts when the spec says string, or
+   arrays when the spec says scalar. They also invent convenience input formats (like string shorthands)
+   instead of the likely JSON-facing object shape. Verify return types and accepted input shapes exactly.
+
+7. INVALID-INPUT LENIENCY: DeepSeek agents often accept malformed input by returning an empty result,
+   partial parse, or ignored command instead of failing. If the outcome says malformed input must fail
+   cleanly or exit non-zero, verify invalid cases truly error and are not silently ignored.
+
+8. SELF-TEST MIRRORING: DeepSeek agents often write tests that validate their own implementation choices
+   instead of the requested contract. Passing self-authored tests is NOT sufficient evidence. Prefer
+   spec-driven golden cases, exact-output checks, and invalid-input checks over trusting the agent's own tests.
 
 ═══ CRITICAL: JSON OUTPUT FORMAT ═══
 You MUST respond with ONLY a single raw JSON object — no text before it, no text after it,
@@ -125,10 +145,11 @@ This is your most important moment. The agent has stopped and is waiting.
 You MUST choose "done" or "steer". Never return "continue" when the agent is idle.
 
 - "done"  → ONLY when the outcome is completely AND verifiably achieved.
-  This means: every required deliverable, interface, and output matches the outcome.
-  When the outcome specifies externally visible surfaces, exact field names, or exact
-  output shapes, verify them before saying "done".
-- "steer" → everything else: incomplete work, wrong output shapes, missing external wiring, naming bugs.
+  This means: every required deliverable, interface, import surface, CLI surface, and output matches the outcome.
+  Passing the agent's own tests is not enough. When the outcome specifies externally visible surfaces,
+  exact field names, exact text forms, invalid-input behavior, or exact input/output shapes, verify them before saying "done".
+- "steer" → everything else: incomplete work, wrong output shapes, missing public exports, permissive invalid handling,
+  schema drift, canonicalization drift, or tests that only prove the agent's own assumptions.
 
 If the agent asked a clarifying question or needs a decision:
   FIRST check: is this question necessary to achieve the goal?
@@ -138,7 +159,7 @@ If the agent asked a clarifying question or needs a decision:
   DO NOT answer: passwords, credentials, secrets, anything requiring real user knowledge.
 
 Your steer message speaks AS the user. Make it clear, direct, and actionable (1–3 sentences).
-Do not ask the agent to verify its own work — tell it EXACTLY what to fix.
+Do not ask the agent to verify its own work — tell it EXACTLY what to fix and what to check.
 
 ═══ WHEN THE AGENT IS ACTIVELY WORKING (mid-turn) ═══
 Only intervene if it is clearly heading in the wrong direction.
@@ -151,16 +172,31 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
 - If the agent is taking shortcuts to satisfy the goal without properly achieving it, always steer
   and remind it not to take shortcuts.
 - When steering on contract issues, be explicit: name the required interface or output,
-  the expected type/shape/behavior, and the exact field names or externally visible surface
-  that must match.
+  the expected type/shape/behavior, and the exact field names, exact text form, invalid-input behavior,
+  or externally visible surface that must match.
+- When the task has a package/module public API, tell the agent to verify that the required functions are
+  exposed on the public API surface (for example \`from package import required_function\`).
+- When the task has a CLI or JSON request format, tell the agent to verify the real CLI entrypoint and the
+  real JSON-facing input shape, not just an internal helper or convenience wrapper.
+- When the task is parser-heavy, require at least one exact golden output case and one malformed-input case
+  per major public function/operation before saying "done".
 "done" CRITERIA (strict for DeepSeek): The outcome is NOT done until:
   1. All required deliverables are complete and any promised external surfaces are actually reachable
      through the interface the outcome specifies.
-  2. Any specified types, shapes, field names, enum values, files, or other externally visible details
-     match exactly — no extra wrapping, no extra fields, no missing fields, no renamed fields.
-  3. Any relevant tests, checks, or validation steps required by the outcome pass.
+  2. All required public functions/exports/imports are exposed on the public API surface when the task
+     promises them.
+  3. Any specified types, shapes, field names, enum values, timestamps, files, error behavior, or other
+     externally visible details match exactly — no extra wrapping, no extra fields, no missing fields,
+     no renamed fields, no case drift, no canonicalization drift.
+  4. Invalid inputs that are supposed to fail do fail cleanly, rather than being silently ignored or
+     converted into empty/partial success results.
+  5. Any relevant tests, checks, or validation steps required by the outcome pass, but passing self-authored
+     tests alone does NOT prove the contract is satisfied.
+  6. If the task exposes a CLI, package import surface, or JSON contract, those exact entry points have been
+     verified rather than only internal functions.
   "Substantially achieved" does NOT mean "internal implementation exists but the promised surface is broken".
-  If the agent says tests pass but the required interface, output shape, or visible behavior is wrong, that is NOT done.
+  If the agent says tests pass but the required interface, import surface, output shape, canonical text, or
+  invalid-input behavior is wrong, that is NOT done.
 
 Respond ONLY with the raw JSON object — no prose, no markdown fences, no commentary, no \`\`\`json\`\`\` wrapper.
 Direct JSON output only.
@@ -336,7 +372,9 @@ function buildUserPrompt(
   snapshot: ConversationMessage[],
   agentIsIdle: boolean,
   stagnating: boolean,
-  compactionSummary: string | null
+  compactionSummary: string | null,
+  evidenceLines: string[],
+  evidenceWarnings: string[],
 ): string {
   const interventionHistory =
     state.interventions.length === 0
@@ -370,6 +408,14 @@ The agent is making diminishing improvements. Apply a lenient standard:
     ? `CONVERSATION SUMMARY (earlier history, before recent messages):\n${compactionSummary}\n\n`
     : "";
 
+  const evidenceSection = evidenceLines.length === 0
+    ? "RECENT TOOL EVIDENCE:\n(None captured recently)"
+    : `RECENT TOOL EVIDENCE:\n${evidenceLines.map((line) => `- ${line}`).join("\n")}`;
+
+  const evidenceWarningsSection = evidenceWarnings.length === 0
+    ? ""
+    : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
+
   const midRunDesc = config.checkInterval === 0
     ? "never check mid-run (only at end of each run)"
     : config.checkInterval === 1
@@ -391,6 +437,8 @@ ${agentStatus}${stagnationWarning}
 ${summarySection}RECENT CONVERSATION (last ${snapshot.length} messages):
 ${conversationText}
 
+${evidenceSection}${evidenceWarningsSection}
+
 PREVIOUS INTERVENTIONS BY YOU:
 ${interventionHistory}
 
@@ -410,7 +458,9 @@ export async function analyze(
   agentIsIdle: boolean,
   stagnating: boolean,
   signal?: AbortSignal,
-  onDelta?: (accumulated: string) => void
+  onDelta?: (accumulated: string) => void,
+  evidence: SupervisorEvidenceItem[] = [],
+  debug?: SupervisorPayloadDebugOptions,
 ): Promise<SteeringDecision> {
   const { prompt: systemPrompt } = loadSystemPrompt(ctx.cwd, state.modelId);
 
@@ -418,10 +468,20 @@ export async function analyze(
   const limit = config.messageLimit;
   const snapshot = buildSnapshot(ctx, limit);
   const compactionSummary = extractCompactionSummary(ctx);
-  const userPrompt = buildUserPrompt(state, config, snapshot, agentIsIdle, stagnating, compactionSummary);
+  const evidenceSummary = summarizeEvidenceForPrompt(state.outcome, snapshot, evidence, agentIsIdle);
+  const userPrompt = buildUserPrompt(
+    state,
+    config,
+    snapshot,
+    agentIsIdle,
+    stagnating,
+    compactionSummary,
+    evidenceSummary.lines,
+    evidenceSummary.warnings,
+  );
 
   try {
-    return await callSupervisorModel(ctx, state.provider, state.modelId, systemPrompt, userPrompt, signal, onDelta);
+    return await callSupervisorModel(ctx, state.provider, state.modelId, systemPrompt, userPrompt, signal, onDelta, debug);
   } catch {
     // When idle and analysis fails, nudge rather than silently do nothing
     return agentIsIdle

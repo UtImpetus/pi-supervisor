@@ -12,10 +12,21 @@ import {
   getAgentDir,
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
+import type { SupervisorPayloadDebugOptions } from "./debug.js";
+import { appendSupervisorPayloadLog } from "./debug.js";
 import type { SteeringDecision } from "./types.js";
 
 const MODEL_CALL_MAX_ATTEMPTS = 2;
 const MODEL_CALL_RETRY_DELAY_MS = 350;
+
+function tryAppendSupervisorPayloadLog(debug: SupervisorPayloadDebugOptions | undefined, record: unknown): void {
+  if (!debug?.enabled) return;
+  try {
+    appendSupervisorPayloadLog(debug.logPath, record);
+  } catch {
+    // Debug logging must never affect supervisor control flow.
+  }
+}
 
 /**
  * Run a one-shot LLM call using pi's internal agent session.
@@ -29,16 +40,32 @@ export async function callModel(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
-  onDelta?: (accumulated: string) => void
+  onDelta?: (accumulated: string) => void,
+  debug?: SupervisorPayloadDebugOptions,
 ): Promise<string | null> {
   const model = ctx.modelRegistry.find(provider, modelId);
   if (!model) return null;
 
   // pi-coding-agent 0.72.x requires cwd + agentDir on the loader and
   // renamed `systemPromptOverride: () => string` → `systemPrompt: string`.
+  let capturedProviderPayload: unknown;
+  let capturedProviderResponse: { status: number; headers: Record<string, string> } | undefined;
+
   const loader = new DefaultResourceLoader({
     cwd: ctx.cwd,
     agentDir: getAgentDir(),
+    extensionFactories: debug?.enabled
+      ? [
+          (pi) => {
+            pi.on("before_provider_request", (event) => {
+              capturedProviderPayload = event.payload;
+            });
+            pi.on("after_provider_response", (event) => {
+              capturedProviderResponse = { status: event.status, headers: event.headers };
+            });
+          },
+        ]
+      : undefined,
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -54,6 +81,9 @@ export async function callModel(
     let responseText = "";
 
     try {
+      capturedProviderPayload = undefined;
+      capturedProviderResponse = undefined;
+
       const result = await createAgentSession({
         sessionManager: SessionManager.inMemory(),
         modelRegistry: ctx.modelRegistry,
@@ -78,8 +108,36 @@ export async function callModel(
       });
 
       await activeSession.prompt(userPrompt);
+      tryAppendSupervisorPayloadLog(debug, {
+        type: "supervisor_model_call",
+        timestamp: new Date().toISOString(),
+        attempt,
+        provider,
+        modelId,
+        systemPrompt,
+        userPrompt,
+        providerPayload: capturedProviderPayload ?? null,
+        providerResponse: capturedProviderResponse ?? null,
+        responseText,
+        ok: true,
+      });
       return responseText;
-    } catch {
+    } catch (error) {
+      tryAppendSupervisorPayloadLog(debug, {
+        type: "supervisor_model_call",
+        timestamp: new Date().toISOString(),
+        attempt,
+        provider,
+        modelId,
+        systemPrompt,
+        userPrompt,
+        providerPayload: capturedProviderPayload ?? null,
+        providerResponse: capturedProviderResponse ?? null,
+        responseText,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        aborted: Boolean(signal?.aborted),
+      });
       if (signal?.aborted) return null;
       if (attempt === MODEL_CALL_MAX_ATTEMPTS) return null;
       const shouldRetry = await waitForRetry(MODEL_CALL_RETRY_DELAY_MS, signal);
@@ -105,9 +163,10 @@ export async function callSupervisorModel(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
-  onDelta?: (accumulated: string) => void
+  onDelta?: (accumulated: string) => void,
+  debug?: SupervisorPayloadDebugOptions,
 ): Promise<SteeringDecision> {
-  const text = await callModel(ctx, provider, modelId, systemPrompt, userPrompt, signal, onDelta);
+  const text = await callModel(ctx, provider, modelId, systemPrompt, userPrompt, signal, onDelta, debug);
   if (text === null) return safeContinue("Model call failed");
   return parseDecision(text);
 }
