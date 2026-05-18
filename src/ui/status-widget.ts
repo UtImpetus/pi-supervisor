@@ -40,6 +40,7 @@ export function isWidgetVisible(): boolean {
 
 export type WidgetAction =
   | { type: "watching" }
+  | { type: "bootstrapping"; summary?: string }
   | { type: "analyzing"; turn: number; thinking?: string }
   | { type: "steering"; message: string }
   | { type: "done" };
@@ -91,6 +92,8 @@ export function updateUI(
     sensitivity: state.sensitivity,
     sensitivityConfig: resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig),
     interventions: [...state.interventions],
+    runtimeHeuristics: [...(state.runtimeHeuristics ?? [])],
+    heuristicSetup: state.heuristicSetup,
   };
   const snapAction = action;
 
@@ -113,6 +116,15 @@ export function updateUI(
     const sensitivity = theme.fg("dim", `sensitivity: ${sensitivityLabel}`);
     // Steer count
     const steers = steerCount > 0 ? theme.fg("dim", `↗ ${steerCount}`) : "";
+    const checks = snap.heuristicSetup?.status === "pending"
+      ? theme.fg("dim", "checks: setting up")
+      : snap.heuristicSetup?.status === "failed"
+        ? theme.fg("dim", `checks: failed${snap.heuristicSetup.error ? "" : ""}`)
+        : snap.runtimeHeuristics.length > 0
+          ? theme.fg("dim", `checks: ${snap.runtimeHeuristics.length}`)
+          : snap.heuristicSetup?.status === "ready"
+            ? theme.fg("dim", "checks: 0")
+            : "";
 
     // Current action
     let actionStr: string;
@@ -120,6 +132,9 @@ export function updateUI(
     switch (snapAction.type) {
       case "watching":
         actionStr = theme.fg("dim", "watching");
+        break;
+      case "bootstrapping":
+        actionStr = theme.fg("warning", snapAction.summary ? truncate(snapAction.summary, MAX_STEER_DISPLAY) : "setting up checks…");
         break;
       case "analyzing":
         actionStr = theme.fg("warning", `⟳ turn ${snapAction.turn}`);
@@ -136,7 +151,7 @@ export function updateUI(
     const sep = theme.fg("dim", " · ");
     const line1 = [header, goal].join(sep);
     const thinkingStr = thinking ? theme.fg("dim", `thinking: ${truncate(thinking, MAX_THINKING_DISPLAY)}`) : "";
-    const line2 = [model, prompt, sensitivity, steers, actionStr, thinkingStr].filter(Boolean).join(sep);
+    const line2 = [model, prompt, sensitivity, checks, steers, actionStr, thinkingStr].filter(Boolean).join(sep);
 
     return {
       render: (width: number) => [

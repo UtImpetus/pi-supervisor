@@ -47,6 +47,36 @@ describe("buildEvidenceItem", () => {
     expect(item?.category).toBe("cli");
     expect(item?.wrapperKey).toBe("result");
   });
+
+  it("captures generic line-count evidence", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "wc -l pet_polyglot/*.py tests/test_all.py run_tests.py" },
+      [{ type: "text", text: "382 pet_polyglot/analyzer.py\n811 tests/test_all.py\n26 run_tests.py\n" }],
+      false,
+    );
+
+    expect(item?.maxLineCount).toBe(811);
+    expect(item?.lineCounts).toEqual(
+      expect.arrayContaining([
+        { path: "pet_polyglot/analyzer.py", count: 382 },
+        { path: "tests/test_all.py", count: 811 },
+      ]),
+    );
+  });
+
+  it("captures suspicious alternate schema keys from CLI output", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
+      [{ type: "text", text: '{"text":"x","cursor_line":1,"cursor_col":2,"cursor_idx":3,"dirty":true,"saved_text":""}' }],
+      false,
+    );
+
+    expect(item?.suspiciousSchemaKeys).toEqual(
+      expect.arrayContaining(["cursor_line", "cursor_col", "cursor_idx"]),
+    );
+  });
 });
 
 describe("collectEvidenceFromBranch", () => {
@@ -300,6 +330,69 @@ describe("summarizeEvidenceForPrompt", () => {
       expect.arrayContaining([
         expect.stringContaining('top-level result object'),
         expect.stringContaining('valid compact JSON is NOT enough'),
+      ]),
+    );
+  });
+
+  it("warns when visible line-count evidence exceeds the limit parsed from the outcome", () => {
+    const outcome = `No Python file may exceed 300 lines, including blank lines.`;
+    const snapshot = [{ role: "assistant" as const, content: "All tests pass. All done." }];
+    const evidence = [
+      buildEvidenceItem(
+        "bash",
+        { command: "wc -l pet_polyglot/*.py tests/test_all.py run_tests.py" },
+        [{ type: "text", text: "382 pet_polyglot/analyzer.py\n811 tests/test_all.py\n26 run_tests.py\n" }],
+        false,
+      )!,
+    ];
+
+    const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("over the 300-line limit"),
+        expect.stringContaining("pet_polyglot/analyzer.py (382)"),
+      ]),
+    );
+  });
+
+  it("warns on suspicious alternate cursor keys when the outcome requires cursor/line/column", () => {
+    const outcome = `simulate_editor(initial_text, events)\n- Track cursor index, line, column, text, dirty flag, and saved text`;
+    const snapshot = [{ role: "assistant" as const, content: "All CLI operations work and everything is complete." }];
+    const evidence = [
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
+        [{ type: "text", text: '{"text":"x","cursor_line":1,"cursor_col":2,"cursor_idx":3,"dirty":true,"saved_text":""}' }],
+        false,
+      )!,
+    ];
+
+    const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("alternate cursor/state keys"),
+        expect.stringContaining("cursor_line"),
+      ]),
+    );
+  });
+
+  it("warns on suspicious analyzer key drift when the outcome expects language counts", () => {
+    const outcome = `analyze_project_files(files)\n- Return a JSON-serializable summary with language counts, manifests, discovered symbols, and warnings`;
+    const snapshot = [{ role: "assistant" as const, content: "The CLI output looks good. All done." }];
+    const evidence = [
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot '{\"op\":\"analyze_project_files\",\"args\":{\"files\":{}}}'" },
+        [{ type: "text", text: '{"languages":{"Python":1},"manifests":{},"symbols":{},"warnings":[]}' }],
+        false,
+      )!,
+    ];
+
+    const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("`languages`"),
+        expect.stringContaining("`language_counts`"),
       ]),
     );
   });

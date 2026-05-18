@@ -20,8 +20,17 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { SupervisorPayloadDebugOptions } from "./debug.js";
 import type { SupervisorEvidenceItem } from "./evidence.js";
 import { summarizeEvidenceForPrompt } from "./evidence.js";
-import { callSupervisorModel } from "./model-client.js";
-import type { ConversationMessage, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
+import { callModel, callSupervisorModel } from "./model-client.js";
+import type {
+  ConversationMessage,
+  RuntimeHeuristic,
+  RuntimeHeuristicKind,
+  RuntimeHeuristicPriority,
+  RuntimeHeuristicSource,
+  SensitivityConfig,
+  SteeringDecision,
+  SupervisorState,
+} from "./types.js";
 import { resolveSensitivityConfig } from "./types.js";
 
 // ---- System prompt loading ----
@@ -29,6 +38,35 @@ import { resolveSensitivityConfig } from "./types.js";
 const SUPERVISOR_MD = "SUPERVISOR.md";
 const CONFIG_DIR = ".pi";
 const GLOBAL_AGENT_DIR = join(homedir(), ".pi", "agent");
+const MAX_RUNTIME_HEURISTICS = 8;
+
+const HEURISTIC_BOOTSTRAP_SYSTEM_PROMPT = `You generate concise runtime supervision heuristics for a coding-task supervisor.
+Return ONLY valid JSON with this exact shape:
+{
+  "heuristics": [
+    {
+      "id": "short-kebab-id",
+      "kind": "line_limit" | "imports" | "cli_surface" | "invalid_cases" | "schema_keys" | "breadth" | "roundtrip",
+      "priority": "high" | "medium" | "low",
+      "warning": "short warning",
+      "appliesWhen": "optional short condition",
+      "paths": ["optional paths/globs"],
+      "operations": ["optional operation names"],
+      "requiredKeys": ["optional exact keys"],
+      "suspiciousKeys": ["optional suspicious alternate keys"],
+      "lineLimit": 123,
+      "derivedFrom": "explicit_outcome" | "examples" | "inferred"
+    }
+  ]
+}
+Rules:
+- Generate 0 to 8 heuristics only.
+- Prefer explicit_outcome over examples over inferred.
+- Only include exact key/schema heuristics when the outcome or examples make them explicit.
+- Do NOT invent precise schemas from ambiguous prose.
+- Keep warnings short and concrete.
+- Focus on checks that can help interpret runtime evidence.
+- No prose outside JSON.`;
 
 /** Built-in fallback system prompt (default, used when no model-specific match). */
 const BUILTIN_SYSTEM_PROMPT = `You are a supervisor monitoring a coding AI assistant conversation.
@@ -138,7 +176,9 @@ DeepSeek-powered agents frequently exhibit these failure modes. Watch for them a
 
 9. PROSE-DEFINED SCHEMA DRIFT: DeepSeek agents often satisfy the rough idea of a returned object/state
    but expose the wrong external structure: wrong top-level vs nested placement, missing fields,
-   renamed fields, or combined fields when the outcome, examples, or visible evidence make the structure explicit.
+   renamed fields, regrouped keys, or combined fields when the outcome, examples, or visible evidence make the structure explicit.
+   Suspicious visible drift includes alternate field names or regrouping such as \`column\` → \`cursor_col\`,
+   \`cursor\` + \`line\` + \`column\` → \`cursor_line\`/\`cursor_col\`/\`cursor_index\`, or \`language_counts\` → \`languages\`.
    Watch for schema drift, but do NOT invent an exact external shape from ambiguous prose alone — require direct
    evidence from the task text, examples, tests, or real outputs before steering on a precise structural mismatch.
 
@@ -197,8 +237,9 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
   real external input shape, not just an internal helper or convenience wrapper.
 - When the outcome, examples, or visible evidence make a returned object/state structure explicit, verify the
   external shape/schema literally: field names, required fields, top-level vs nested placement, and whether
-  separate concepts are exposed as separate fields. If prose is ambiguous, do NOT invent a precise schema —
-  require direct verification evidence instead of guessing.
+  separate concepts are exposed as separate fields. Treat suspicious alternate field names, flattening, or
+  regrouping in visible outputs as high-signal drift and require exact contract verification before "done".
+  If prose is ambiguous, do NOT invent a precise schema — require direct verification evidence instead of guessing.
 - For multi-function or multi-operation tasks, require representative exact-output checks across different risk classes
   (for example parser output, renderer/formatter output, schema summary output, and stateful logic) rather than accepting
   one positive request per operation as sufficient proof.
@@ -236,8 +277,9 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
      not just one successful invocation pattern repeated mechanically.
   9. If the outcome, examples, or visible evidence make a returned state/object structure explicit, the actual
      visible external shape/schema matches it exactly: correct field names, required fields present, correct
-     top-level vs nested placement, and no silent collapsing of separately described values. If the prose is
-     ambiguous, require direct verification evidence instead of inventing a precise schema.
+     top-level vs nested placement, no silent collapsing of separately described values, and no suspicious
+     alternate naming or regrouping that changes the declared contract. If the prose is ambiguous, require direct
+     verification evidence instead of inventing a precise schema.
   10. Invalid-case coverage is operation-specific where the outcome implies it — not just generic framing checks,
       missing top-level args, or unknown-op checks.
   11. Stateful, roundtrip, or summarization-heavy operations have been verified with depth appropriate to their
@@ -425,6 +467,92 @@ function extractAssistantText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
+function isRuntimeHeuristicKind(value: unknown): value is RuntimeHeuristicKind {
+  return value === "line_limit" || value === "imports" || value === "cli_surface" || value === "invalid_cases" || value === "schema_keys" || value === "breadth" || value === "roundtrip";
+}
+
+function isRuntimeHeuristicPriority(value: unknown): value is RuntimeHeuristicPriority {
+  return value === "high" || value === "medium" || value === "low";
+}
+
+function isRuntimeHeuristicSource(value: unknown): value is RuntimeHeuristicSource {
+  return value === "explicit_outcome" || value === "examples" || value === "inferred";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function normalizeRuntimeHeuristic(value: unknown, index: number): RuntimeHeuristic | null {
+  if (typeof value !== "object" || value === null) return null;
+  const item = value as Record<string, unknown>;
+  if (typeof item.id !== "string" || !isRuntimeHeuristicKind(item.kind) || !isRuntimeHeuristicPriority(item.priority) || typeof item.warning !== "string") {
+    return null;
+  }
+
+  return {
+    id: item.id.trim() || `heuristic-${index + 1}`,
+    kind: item.kind,
+    priority: item.priority,
+    warning: item.warning.trim(),
+    appliesWhen: typeof item.appliesWhen === "string" ? item.appliesWhen.trim() : undefined,
+    paths: isStringArray(item.paths) ? item.paths : undefined,
+    operations: isStringArray(item.operations) ? item.operations : undefined,
+    requiredKeys: isStringArray(item.requiredKeys) ? item.requiredKeys : undefined,
+    suspiciousKeys: isStringArray(item.suspiciousKeys) ? item.suspiciousKeys : undefined,
+    lineLimit: typeof item.lineLimit === "number" && Number.isFinite(item.lineLimit) ? item.lineLimit : undefined,
+    derivedFrom: isRuntimeHeuristicSource(item.derivedFrom) ? item.derivedFrom : undefined,
+  };
+}
+
+function parseRuntimeHeuristicsResponse(text: string): RuntimeHeuristic[] {
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) ?? text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+  const jsonStr = jsonMatch?.[1] ?? text.trim();
+
+  try {
+    const parsed = JSON.parse(jsonStr) as { heuristics?: unknown } | unknown[];
+    const heuristics = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { heuristics?: unknown })?.heuristics) ? (parsed as { heuristics: unknown[] }).heuristics : [];
+    return heuristics
+      .map((item, index) => normalizeRuntimeHeuristic(item, index))
+      .filter((item): item is RuntimeHeuristic => item !== null)
+      .slice(0, MAX_RUNTIME_HEURISTICS);
+  } catch {
+    return [];
+  }
+}
+
+export function formatRuntimeHeuristicsForPrompt(heuristics: RuntimeHeuristic[]): string {
+  if (heuristics.length === 0) return "RUNTIME CHECK PLAN:\n(None generated)";
+
+  const lines = heuristics.map((heuristic) => {
+    const extras = [
+      heuristic.operations?.length ? `ops=${heuristic.operations.join(",")}` : "",
+      heuristic.paths?.length ? `paths=${heuristic.paths.join(",")}` : "",
+      heuristic.requiredKeys?.length ? `requiredKeys=${heuristic.requiredKeys.join(",")}` : "",
+      heuristic.suspiciousKeys?.length ? `suspiciousKeys=${heuristic.suspiciousKeys.join(",")}` : "",
+      heuristic.lineLimit !== undefined ? `lineLimit=${heuristic.lineLimit}` : "",
+      heuristic.derivedFrom ? `source=${heuristic.derivedFrom}` : "",
+    ].filter(Boolean).join("; ");
+
+    return `- [${heuristic.priority}] ${heuristic.kind}: ${heuristic.warning}${extras ? ` (${extras})` : ""}`;
+  });
+
+  return `RUNTIME CHECK PLAN:\n${lines.join("\n")}`;
+}
+
+export async function generateRuntimeHeuristics(
+  ctx: ExtensionContext,
+  provider: string,
+  modelId: string,
+  outcome: string,
+  debug?: SupervisorPayloadDebugOptions,
+): Promise<RuntimeHeuristic[]> {
+  const userPrompt = `Desired outcome:\n${outcome}\n\nGenerate a compact runtime check plan for this outcome. Focus on evidence-interpretation helpers such as line limits, exact import surfaces, CLI/entrypoint checks, invalid-case coverage, exact schema keys that are explicit in the outcome/examples, roundtrip requirements, and breadth requirements. Return JSON only.`;
+  const text = await callModel(ctx, provider, modelId, HEURISTIC_BOOTSTRAP_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
+  if (text === null) return [];
+  return parseRuntimeHeuristicsResponse(text);
+}
+
 /** Build the user-facing prompt for the supervisor LLM. */
 function buildUserPrompt(
   state: SupervisorState,
@@ -435,6 +563,7 @@ function buildUserPrompt(
   compactionSummary: string | null,
   evidenceLines: string[],
   evidenceWarnings: string[],
+  runtimeHeuristics: RuntimeHeuristic[],
 ): string {
   const interventionHistory =
     state.interventions.length === 0
@@ -476,6 +605,8 @@ The agent is making diminishing improvements. Apply a lenient standard:
     ? ""
     : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
 
+  const runtimeHeuristicsSection = `\n${formatRuntimeHeuristicsForPrompt(runtimeHeuristics)}`;
+
   const midRunDesc = config.checkInterval === 0
     ? "never check mid-run (only at end of each run)"
     : config.checkInterval === 1
@@ -497,7 +628,7 @@ ${agentStatus}${stagnationWarning}
 ${summarySection}RECENT CONVERSATION (last ${snapshot.length} messages):
 ${conversationText}
 
-${evidenceSection}${evidenceWarningsSection}
+${evidenceSection}${evidenceWarningsSection}${runtimeHeuristicsSection}
 
 PREVIOUS INTERVENTIONS BY YOU:
 ${interventionHistory}
@@ -538,6 +669,7 @@ export async function analyze(
     compactionSummary,
     evidenceSummary.lines,
     evidenceSummary.warnings,
+    state.runtimeHeuristics ?? [],
   );
 
   try {

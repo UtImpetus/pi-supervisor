@@ -14,12 +14,20 @@ export type EvidenceCategory =
   | "search"
   | "other";
 
+export interface LineCountEntry {
+  path: string;
+  count: number;
+}
+
 export interface SupervisorEvidenceItem {
   toolName: string;
   category: EvidenceCategory;
   summary: string;
   isError: boolean;
   wrapperKey?: "result" | "data" | "output";
+  maxLineCount?: number;
+  lineCounts?: LineCountEntry[];
+  suspiciousSchemaKeys?: string[];
 }
 
 export interface EvidencePromptSummary {
@@ -43,6 +51,8 @@ const MAX_NOTE_WARNINGS = 3;
 const MAX_NOTE_EVIDENCE = 4;
 const MAX_NOTE_CONTENT = 220;
 const TOP_LEVEL_WRAPPER_RE = /^\s*\{\s*"(result|data|output)"\s*:/;
+const LINE_COUNT_RE = /^\s*(\d+)\s+(.+?)\s*$/gm;
+const SUSPICIOUS_SCHEMA_KEY_RE = /"(cursor_line|cursor_col|cursor_idx|cursor_index|languages)"/g;
 
 export interface SupervisorEvidenceSnapshot {
   items: SupervisorEvidenceItem[];
@@ -89,6 +99,43 @@ function detectTopLevelWrapper(text: string): "result" | "data" | "output" | nul
   return key === "result" || key === "data" || key === "output" ? key : null;
 }
 
+function detectLineCountEvidence(
+  command: string,
+  text: string,
+): { maxLineCount?: number; lineCounts?: LineCountEntry[] } {
+  if (!/wc\s+-l|find\s+.+\.py/.test(command)) return {};
+
+  LINE_COUNT_RE.lastIndex = 0;
+  let match = LINE_COUNT_RE.exec(text);
+  let maxLineCount = 0;
+  const lineCounts: LineCountEntry[] = [];
+
+  while (match !== null) {
+    const count = Number(match[1]);
+    const path = match[2]?.trim();
+    if (Number.isFinite(count) && path && path.toLowerCase() !== "total") {
+      maxLineCount = Math.max(maxLineCount, count);
+      lineCounts.push({ path, count });
+    }
+    match = LINE_COUNT_RE.exec(text);
+  }
+
+  if (maxLineCount === 0) return {};
+  return {
+    maxLineCount,
+    lineCounts: lineCounts.length > 0 ? lineCounts : undefined,
+  };
+}
+
+function detectSuspiciousSchemaKeys(text: string): string[] {
+  SUSPICIOUS_SCHEMA_KEY_RE.lastIndex = 0;
+  const keys = new Set<string>();
+  for (const match of text.matchAll(SUSPICIOUS_SCHEMA_KEY_RE)) {
+    if (match[1]) keys.add(match[1]);
+  }
+  return [...keys];
+}
+
 function classifyBashCommand(command: string, excerpt: string): EvidenceCategory {
   const lower = `${command}\n${excerpt}`.toLowerCase();
 
@@ -132,11 +179,16 @@ export function buildEvidenceItem(
     const rawText = extractText(content);
     const category = classifyBashCommand(command, excerpt);
     const wrapperKey = category === "cli" ? detectTopLevelWrapper(rawText) : null;
+    const lineCountEvidence = detectLineCountEvidence(command, rawText);
+    const suspiciousSchemaKeys = category === "cli" ? detectSuspiciousSchemaKeys(rawText) : [];
     return {
       toolName,
       category,
       isError,
       wrapperKey: wrapperKey ?? undefined,
+      maxLineCount: lineCountEvidence.maxLineCount,
+      lineCounts: lineCountEvidence.lineCounts,
+      suspiciousSchemaKeys: suspiciousSchemaKeys.length > 0 ? suspiciousSchemaKeys : undefined,
       summary: `${isError ? "ERR" : "OK"} bash \`${truncate(squash(command), MAX_SUMMARY_LEN)}\`${excerpt ? ` → ${excerpt}` : ""}`,
     };
   }
@@ -203,7 +255,10 @@ function isEvidenceItem(value: unknown): value is SupervisorEvidenceItem {
     isEvidenceCategory(item.category) &&
     typeof item.summary === "string" &&
     typeof item.isError === "boolean" &&
-    (item.wrapperKey === undefined || item.wrapperKey === "result" || item.wrapperKey === "data" || item.wrapperKey === "output")
+    (item.wrapperKey === undefined || item.wrapperKey === "result" || item.wrapperKey === "data" || item.wrapperKey === "output") &&
+    (item.maxLineCount === undefined || typeof item.maxLineCount === "number") &&
+    (item.lineCounts === undefined || (Array.isArray(item.lineCounts) && item.lineCounts.every((value) => typeof value === "object" && value !== null && typeof (value as Record<string, unknown>).path === "string" && typeof (value as Record<string, unknown>).count === "number"))) &&
+    (item.suspiciousSchemaKeys === undefined || (Array.isArray(item.suspiciousSchemaKeys) && item.suspiciousSchemaKeys.every((value) => typeof value === "string")))
   );
 }
 
@@ -290,6 +345,29 @@ function outcomeNeedsBroadOperationCoverage(outcome: string): boolean {
   return /supported cli operations|required public functions|all seven|all 7|7 ops|7 operations|one positive request per operation/.test(lower);
 }
 
+function extractLineLimitFromOutcome(outcome: string): number | null {
+  const match = outcome.match(/(\d+)\s+lines?/i);
+  if (!match) return null;
+  const limit = Number(match[1]);
+  return Number.isFinite(limit) ? limit : null;
+}
+
+function shouldApplyLineLimitToPath(outcome: string, path: string): boolean {
+  const lower = outcome.toLowerCase();
+  if (/python file|python files|\.py/.test(lower)) return /\.py$/i.test(path);
+  return true;
+}
+
+function outcomeMentionsCursorShape(outcome: string): boolean {
+  const lower = outcome.toLowerCase();
+  return /cursor index|line, column|dirty flag|saved text/.test(lower);
+}
+
+function outcomeMentionsLanguageCounts(outcome: string): boolean {
+  const lower = outcome.toLowerCase();
+  return /language counts|discovered symbols|manifests/.test(lower);
+}
+
 export function summarizeEvidenceForPrompt(
   outcome: string,
   snapshot: ConversationMessage[],
@@ -305,6 +383,16 @@ export function summarizeEvidenceForPrompt(
   const assistantClaimsDone = hasAssistantClaim(snapshot, /\ball done\b|\bfinal state\b|\bcompleted\b|\bcomplete\b/);
   const cliEvidence = items.filter((item) => item.category === "cli");
   const wrappedCliOutputs = cliEvidence.filter((item) => item.wrapperKey !== undefined);
+  const lineLimit = extractLineLimitFromOutcome(outcome);
+  const overLimitLineEntries = lineLimit === null
+    ? []
+    : items
+        .flatMap((item) => item.lineCounts ?? [])
+        .filter((entry) => shouldApplyLineLimitToPath(outcome, entry.path) && entry.count > lineLimit);
+  const cursorSchemaEvidence = cliEvidence.filter((item) =>
+    item.suspiciousSchemaKeys?.some((key) => key === "cursor_line" || key === "cursor_col" || key === "cursor_idx" || key === "cursor_index"),
+  );
+  const analyzerSchemaEvidence = cliEvidence.filter((item) => item.suspiciousSchemaKeys?.includes("languages"));
 
   if ((assistantClaimsTests || assistantClaimsDone || agentIsIdle) && outcomeNeedsCliVerification(outcome)) {
     if (categories.has("tests") && !categories.has("cli")) {
@@ -321,6 +409,22 @@ export function summarizeEvidenceForPrompt(
 
   if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeNeedsBroadOperationCoverage(outcome) && cliEvidence.length > 0 && cliEvidence.length < 2) {
     warnings.push("Recent CLI verification does not yet show representative breadth across the required operation surface. Verify exact outputs on multiple representative operations, not just one successful invocation.");
+  }
+
+  if ((assistantClaimsTests || assistantClaimsDone || agentIsIdle) && lineLimit !== null && overLimitLineEntries.length > 0) {
+    const worst = overLimitLineEntries.slice(0, 2).map((entry) => `${entry.path} (${entry.count})`).join(", ");
+    warnings.push(`Recent line-count evidence shows one or more files over the ${lineLimit}-line limit${worst ? ` (${worst})` : ""}. The outcome is not done until every required file is within the limit.`);
+  }
+
+  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeMentionsCursorShape(outcome) && cursorSchemaEvidence.length > 0) {
+    const keys = [...new Set(cursorSchemaEvidence.flatMap((item) => item.suspiciousSchemaKeys ?? []))]
+      .filter((key) => key.startsWith("cursor_"))
+      .join(", ");
+    warnings.push(`Recent CLI/stdout examples use suspicious alternate cursor/state keys (${keys}). If the contract expects fields like cursor, line, and column, verify the exact external keys before saying "done".`);
+  }
+
+  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeMentionsLanguageCounts(outcome) && analyzerSchemaEvidence.length > 0) {
+    warnings.push("Recent CLI/stdout examples use `languages` in the external summary. If the contract/examples expect `language_counts` or a differently grouped manifest shape, verify the exact external keys before saying \"done\".");
   }
 
   if ((assistantClaimsDone || agentIsIdle) && outcomeNeedsImportVerification(outcome) && !categories.has("imports")) {
@@ -345,7 +449,7 @@ function dedupeEvidenceItems(items: SupervisorEvidenceItem[], maxItems: number):
 
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;
-    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}|${item.wrapperKey ?? ""}`;
+    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}|${item.wrapperKey ?? ""}|${item.maxLineCount ?? ""}|${(item.lineCounts ?? []).map((entry) => `${entry.path}:${entry.count}`).join(",")}|${(item.suspiciousSchemaKeys ?? []).join(",")}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);

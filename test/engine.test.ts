@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSnapshot, extractCompactionSummary, findBuiltinModelPrompt, loadSystemPrompt } from "../src/engine.js";
+import { buildSnapshot, extractCompactionSummary, findBuiltinModelPrompt, formatRuntimeHeuristicsForPrompt, loadSystemPrompt } from "../src/engine.js";
 
 // Build a minimal ExtensionContext that only exposes the bits engine.ts touches.
 function makeCtx(branch: any[]): any {
@@ -138,6 +138,34 @@ describe("loadSystemPrompt", () => {
     const { prompt, source } = loadSystemPrompt(cwd);
     expect(prompt).toContain("supervisor monitoring a coding AI assistant");
     expect(source).toBe("built-in");
+  });
+});
+
+describe("formatRuntimeHeuristicsForPrompt", () => {
+  it("formats a compact runtime check plan for the supervisor prompt", () => {
+    const section = formatRuntimeHeuristicsForPrompt([
+      {
+        id: "imports",
+        kind: "imports",
+        priority: "high",
+        warning: "Verify public imports",
+        derivedFrom: "explicit_outcome",
+      },
+      {
+        id: "schema",
+        kind: "schema_keys",
+        priority: "medium",
+        warning: "Watch suspicious key drift",
+        operations: ["simulate_editor"],
+        requiredKeys: ["cursor", "line", "column"],
+        suspiciousKeys: ["cursor_col", "cursor_idx"],
+      },
+    ]);
+
+    expect(section).toContain("RUNTIME CHECK PLAN");
+    expect(section).toContain("Verify public imports");
+    expect(section).toContain("simulate_editor");
+    expect(section).toContain("cursor_col");
   });
 });
 

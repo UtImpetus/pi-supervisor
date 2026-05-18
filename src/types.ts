@@ -17,6 +17,39 @@ export interface SensitivityConfig {
 
 export type SupervisorAction = "continue" | "steer" | "done";
 
+export type RuntimeHeuristicKind =
+  | "line_limit"
+  | "imports"
+  | "cli_surface"
+  | "invalid_cases"
+  | "schema_keys"
+  | "breadth"
+  | "roundtrip";
+
+export type RuntimeHeuristicPriority = "high" | "medium" | "low";
+export type RuntimeHeuristicSource = "explicit_outcome" | "examples" | "inferred";
+
+export interface RuntimeHeuristic {
+  id: string;
+  kind: RuntimeHeuristicKind;
+  priority: RuntimeHeuristicPriority;
+  warning: string;
+  appliesWhen?: string;
+  paths?: string[];
+  operations?: string[];
+  requiredKeys?: string[];
+  suspiciousKeys?: string[];
+  lineLimit?: number;
+  derivedFrom?: RuntimeHeuristicSource;
+}
+
+export interface RuntimeHeuristicSetup {
+  status: "pending" | "ready" | "failed";
+  count: number;
+  source?: "bootstrap-llm";
+  error?: string;
+}
+
 /** A single intervention record */
 export interface SupervisorIntervention {
   turnCount: number;
@@ -87,6 +120,8 @@ export interface SupervisorState {
   interventions: SupervisorIntervention[];
   startedAt: number;
   turnCount: number;
+  runtimeHeuristics?: RuntimeHeuristic[];
+  heuristicSetup?: RuntimeHeuristicSetup;
 }
 
 /** Persisted supervisor defaults/preferences used when supervision is inactive. */

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SupervisorStateManager } from "../src/state.js";
-import type { SupervisorPreferences, SupervisorState } from "../src/types.js";
+import type { RuntimeHeuristic, SupervisorPreferences, SupervisorState } from "../src/types.js";
 
 function makePi() {
   return {
@@ -30,6 +30,8 @@ describe("SupervisorStateManager", () => {
       sensitivity: "high",
       interventions: [],
       turnCount: 0,
+      runtimeHeuristics: [],
+      heuristicSetup: { status: "pending", count: 0 },
     });
     expect(mgr.getState()?.startedAt).toBeGreaterThan(0);
     expect(mgr.getPreferences()).toEqual({
@@ -200,6 +202,44 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getPreferences()).toEqual({ widgetVisible: false, debugPayloads: true });
     expect(pi.appendEntry).toHaveBeenCalledTimes(1);
     expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { widgetVisible: false, debugPayloads: true });
+  });
+
+  it("stores runtime heuristics and marks setup ready", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+    mgr.start("goal", "anthropic", "model", "medium");
+    pi.appendEntry.mockClear();
+
+    const heuristics: RuntimeHeuristic[] = [
+      { id: "imports", kind: "imports", priority: "high", warning: "Verify imports", derivedFrom: "explicit_outcome" },
+      { id: "schema", kind: "schema_keys", priority: "medium", warning: "Verify keys", suspiciousKeys: ["cursor_col"] },
+    ];
+    mgr.setRuntimeHeuristics(heuristics);
+
+    expect(mgr.getState()).toMatchObject({
+      runtimeHeuristics: heuristics,
+      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
+    });
+    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-state", expect.objectContaining({
+      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
+    }));
+  });
+
+  it("can mark heuristic setup failed without stopping supervision", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+    mgr.start("goal", "anthropic", "model", "medium");
+    pi.appendEntry.mockClear();
+
+    mgr.setHeuristicSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No heuristics generated" });
+
+    expect(mgr.isActive()).toBe(true);
+    expect(mgr.getState()?.heuristicSetup).toEqual({
+      status: "failed",
+      count: 0,
+      source: "bootstrap-llm",
+      error: "No heuristics generated",
+    });
   });
 
   it("loadFromSession picks the most recent supervisor state and preferences independently", () => {

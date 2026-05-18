@@ -3,7 +3,15 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { Sensitivity, SensitivityConfig, SupervisorIntervention, SupervisorPreferences, SupervisorState } from "./types.js";
+import type {
+  RuntimeHeuristic,
+  RuntimeHeuristicSetup,
+  Sensitivity,
+  SensitivityConfig,
+  SupervisorIntervention,
+  SupervisorPreferences,
+  SupervisorState,
+} from "./types.js";
 
 const STATE_ENTRY_TYPE = "supervisor-state";
 const PREFERENCES_ENTRY_TYPE = "supervisor-preferences";
@@ -32,6 +40,8 @@ export class SupervisorStateManager {
       interventions: [],
       startedAt: Date.now(),
       turnCount: 0,
+      runtimeHeuristics: [],
+      heuristicSetup: { status: "pending", count: 0 },
     };
     this.preferences = {
       ...this.preferences,
@@ -79,6 +89,23 @@ export class SupervisorStateManager {
   incrementTurnCount(): void {
     if (!this.state) return;
     this.state.turnCount++;
+  }
+
+  setRuntimeHeuristics(heuristics: RuntimeHeuristic[]): void {
+    if (!this.state) return;
+    this.state.runtimeHeuristics = [...heuristics];
+    this.state.heuristicSetup = {
+      status: "ready",
+      count: heuristics.length,
+      source: "bootstrap-llm",
+    };
+    this.persistState();
+  }
+
+  setHeuristicSetup(setup: RuntimeHeuristicSetup): void {
+    if (!this.state) return;
+    this.state.heuristicSetup = { ...setup };
+    this.persistState();
   }
 
   setModel(provider: string, modelId: string): void {

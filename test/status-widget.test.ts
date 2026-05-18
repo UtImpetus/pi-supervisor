@@ -110,6 +110,14 @@ describe("status-widget", () => {
     expect(lines[1]).not.toContain("↗");
   });
 
+  it("shows bootstrapping action and pending check setup", () => {
+    const state = makeState({ heuristicSetup: { status: "pending", count: 0 } });
+    const action: WidgetAction = { type: "bootstrapping" };
+    const lines = captureRender(state, action);
+    expect(lines[1]).toContain("checks: setting up");
+    expect(lines[1]).toContain("setting up checks");
+  });
+
   it("shows analyzing action with turn number", () => {
     const action: WidgetAction = { type: "analyzing", turn: 4 };
     const lines = captureRender(makeState(), action);
@@ -215,6 +223,18 @@ describe("status-widget", () => {
     expect(lines[1]).toContain("⨍2");
     expect(lines[1]).toContain("≥0.8");
     expect(lines[1]).toContain("w10");
+  });
+
+  it("shows heuristic count when runtime checks are ready", () => {
+    const state = makeState({
+      runtimeHeuristics: [
+        { id: "imports", kind: "imports", priority: "high", warning: "Verify imports" },
+        { id: "schema", kind: "schema_keys", priority: "medium", warning: "Verify schema keys" },
+      ],
+      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
+    });
+    const lines = captureRender(state);
+    expect(lines[1]).toContain("checks: 2");
   });
 });
 

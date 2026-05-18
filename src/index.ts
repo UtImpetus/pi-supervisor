@@ -22,7 +22,7 @@ import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { parseLegacySuperviseInvocation } from "./command-routing.js";
 import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";
-import { analyze, buildSnapshot, loadBuiltinSystemPrompt, loadSystemPrompt } from "./engine.js";
+import { analyze, buildSnapshot, generateRuntimeHeuristics, loadBuiltinSystemPrompt, loadSystemPrompt } from "./engine.js";
 import {
   buildEvidenceNote,
   findLastEvidenceNoteContent,
@@ -533,6 +533,26 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Updated ${targetPath} from current session lessons.`, "info");
   };
 
+  const bootstrapRuntimeHeuristics = async (
+    ctx: ExtensionContext,
+    provider: string,
+    modelId: string,
+    outcome: string,
+  ): Promise<string> => {
+    updateUI(ctx, state.getState(), { type: "bootstrapping", summary: "setting up checks…" });
+
+    const runtimeHeuristics = await generateRuntimeHeuristics(ctx, provider, modelId, outcome, getDebugOptions(ctx));
+    if (runtimeHeuristics.length > 0) {
+      state.setRuntimeHeuristics(runtimeHeuristics);
+      updateUI(ctx, state.getState());
+      return ` | checks: ${runtimeHeuristics.length}`;
+    }
+
+    state.setHeuristicSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No heuristics generated" });
+    updateUI(ctx, state.getState());
+    return " | checks: fallback";
+  };
+
   const startSupervisionRun = async (ctx: ExtensionContext, outcome: string) => {
     const defaults = resolveSettingsDefaults(ctx);
     let provider = defaults.provider;
@@ -558,12 +578,13 @@ export default function (pi: ExtensionAPI) {
     idleSteers = 0;
     resetRunEvidence();
     labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
-    updateUI(ctx, state.getState());
+
+    const checkLabel = await bootstrapRuntimeHeuristics(ctx, provider, modelId, outcome);
 
     const { source } = loadSystemPrompt(ctx.cwd, modelId);
     const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
     ctx.ui.notify(
-      `Supervisor active: "${outcome.slice(0, 50)}${outcome.length > 50 ? "…" : ""}" | ${provider}/${modelId} | ${promptLabel}`,
+      `Supervisor active: "${outcome.slice(0, 50)}${outcome.length > 50 ? "…" : ""}" | ${provider}/${modelId} | ${promptLabel}${checkLabel}`,
       "info"
     );
   };
@@ -733,18 +754,19 @@ export default function (pi: ExtensionAPI) {
       idleSteers = 0;
       resetRunEvidence();
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
-      updateUI(ctx, state.getState());
+
+      const checkLabel = await bootstrapRuntimeHeuristics(ctx, provider, modelId, params.outcome);
 
       const { source } = loadSystemPrompt(ctx.cwd, modelId);
       const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
 
       // Notify the user so they're aware supervision was initiated by the model
       ctx.ui.notify(
-        `Supervisor started by agent: "${params.outcome.slice(0, 60)}${params.outcome.length > 60 ? "…" : ""}" | ${provider}/${modelId} | sensitivity: ${sensitivity} | ${promptLabel}`,
+        `Supervisor started by agent: "${params.outcome.slice(0, 60)}${params.outcome.length > 60 ? "…" : ""}" | ${provider}/${modelId} | sensitivity: ${sensitivity} | ${promptLabel}${checkLabel}`,
         "info"
       );
 
-      return text(`Supervision active. Outcome: "${params.outcome}" | ${provider}/${modelId} | sensitivity: ${sensitivity}`);
+      return text(`Supervision active. Outcome: "${params.outcome}" | ${provider}/${modelId} | sensitivity: ${sensitivity}${checkLabel}`);
     },
   });
 }
