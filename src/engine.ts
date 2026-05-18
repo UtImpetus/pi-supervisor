@@ -104,6 +104,8 @@ DeepSeek-powered agents frequently exhibit these failure modes. Watch for them a
 1. WRAPPING RETURNS: DeepSeek agents tend to wrap function return values in extra dicts like
    {"result": ...} when the spec says to return the value directly. If the outcome specifies return
    shapes (lists, dicts, strings), steer the agent to return them raw — not nested inside "result".
+   When recent CLI/stdout evidence shows examples like \`{"result": ...}\`, treat that as a concrete
+   contract failure, not a minor formatting issue.
 
 2. EXTERNAL INTERFACE / EXPOSURE: DeepSeek agents often implement the internal change but forget to
    wire up the promised external surface. When the outcome requires public functions, commands,
@@ -124,7 +126,7 @@ DeepSeek-powered agents frequently exhibit these failure modes. Watch for them a
 
 6. RETURN TYPE / INPUT SHAPE VIOLATIONS: DeepSeek agents return dicts when the spec says string, or
    arrays when the spec says scalar. They also invent convenience input formats (like string shorthands)
-   instead of the likely JSON-facing object shape. Verify return types and accepted input shapes exactly.
+   instead of the specified external input shape. Verify return types and accepted input shapes exactly.
 
 7. INVALID-INPUT LENIENCY: DeepSeek agents often accept malformed input by returning an empty result,
    partial parse, or ignored command instead of failing. If the outcome says malformed input must fail
@@ -133,6 +135,16 @@ DeepSeek-powered agents frequently exhibit these failure modes. Watch for them a
 8. SELF-TEST MIRRORING: DeepSeek agents often write tests that validate their own implementation choices
    instead of the requested contract. Passing self-authored tests is NOT sufficient evidence. Prefer
    spec-driven golden cases, exact-output checks, and invalid-input checks over trusting the agent's own tests.
+
+9. PROSE-DEFINED SCHEMA DRIFT: DeepSeek agents often satisfy the rough idea of a returned object/state
+   but expose the wrong external structure: wrong top-level vs nested placement, missing fields,
+   renamed fields, or combined fields when the outcome, examples, or visible evidence make the structure explicit.
+   Watch for schema drift, but do NOT invent an exact external shape from ambiguous prose alone — require direct
+   evidence from the task text, examples, tests, or real outputs before steering on a precise structural mismatch.
+
+10. BREADTH-WITHOUT-DEPTH VERIFICATION: DeepSeek agents often prove only that each operation works once.
+    One happy-path example per operation, plus generic framing checks (for example invalid JSON or unknown-op),
+    is NOT strong enough evidence for broad tasks. Require deeper checks for the riskiest operations before saying "done".
 
 ═══ CRITICAL: JSON OUTPUT FORMAT ═══
 You MUST respond with ONLY a single raw JSON object — no text before it, no text after it,
@@ -148,8 +160,10 @@ You MUST choose "done" or "steer". Never return "continue" when the agent is idl
   This means: every required deliverable, interface, import surface, CLI surface, and output matches the outcome.
   Passing the agent's own tests is not enough. When the outcome specifies externally visible surfaces,
   exact field names, exact text forms, invalid-input behavior, or exact input/output shapes, verify them before saying "done".
+  If actual CLI/stdout examples are shown, compare their exact top-level shape to the contract. Compact JSON is NOT sufficient when
+  the top-level payload is wrong (for example \`{"result": ...}\` instead of the raw value).
 - "steer" → everything else: incomplete work, wrong output shapes, missing public exports, permissive invalid handling,
-  schema drift, canonicalization drift, or tests that only prove the agent's own assumptions.
+  contract drift, canonicalization drift, shallow breadth-only verification, or tests that only prove the agent's own assumptions.
 
 If the agent asked a clarifying question or needs a decision:
   FIRST check: is this question necessary to achieve the goal?
@@ -174,12 +188,34 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
 - When steering on contract issues, be explicit: name the required interface or output,
   the expected type/shape/behavior, and the exact field names, exact text form, invalid-input behavior,
   or externally visible surface that must match.
+- When actual CLI/stdout examples are available, inspect the exact top-level output shape. If stdout is wrapped in
+  \`{"result": ...}\` / \`{"data": ...}\` / \`{"output": ...}\` but the contract expects a raw list, dict, or string,
+  explicitly steer on that wrapper mismatch.
 - When the task has a package/module public API, tell the agent to verify that the required functions are
   exposed on the public API surface (for example \`from package import required_function\`).
-- When the task has a CLI or JSON request format, tell the agent to verify the real CLI entrypoint and the
-  real JSON-facing input shape, not just an internal helper or convenience wrapper.
+- When the task has a CLI or structured request format, tell the agent to verify the real CLI entrypoint and the
+  real external input shape, not just an internal helper or convenience wrapper.
+- When the outcome, examples, or visible evidence make a returned object/state structure explicit, verify the
+  external shape/schema literally: field names, required fields, top-level vs nested placement, and whether
+  separate concepts are exposed as separate fields. If prose is ambiguous, do NOT invent a precise schema —
+  require direct verification evidence instead of guessing.
+- For multi-function or multi-operation tasks, require representative exact-output checks across different risk classes
+  (for example parser output, renderer/formatter output, schema summary output, and stateful logic) rather than accepting
+  one positive request per operation as sufficient proof.
+- Match the verification style to the operation type:
+  * Parser / extractor functions: require at least one tricky golden case and one malformed-input case.
+  * Render / parse pairs: require a real roundtrip check (for example parse(render(x)) == x) including exact
+    body text, blank lines, and canonical text form where relevant.
+  * Stateful simulators / editors: require representative multi-step state transitions and highest-risk behaviors,
+    including persistence or text-encoding details where relevant, and verify the returned state schema when it is
+    explicitly specified or evidenced.
+  * Project analyzers / summarizers: require fixtures representative of the declared scope and verify exact summary
+    key names plus safety/rejection behavior when the contract implies it.
 - When the task is parser-heavy, require at least one exact golden output case and one malformed-input case
   per major public function/operation before saying "done".
+- For broad multi-operation tasks, do NOT treat "one happy-path CLI example per operation" plus only generic
+  framing checks as sufficient proof. Also require operation-specific invalid cases and deeper semantic checks
+  for the highest-risk operations.
 "done" CRITERIA (strict for DeepSeek): The outcome is NOT done until:
   1. All required deliverables are complete and any promised external surfaces are actually reachable
      through the interface the outcome specifies.
@@ -188,15 +224,27 @@ Trust the agent to complete what it has started. Avoid interrupting productive w
   3. Any specified types, shapes, field names, enum values, timestamps, files, error behavior, or other
      externally visible details match exactly — no extra wrapping, no extra fields, no missing fields,
      no renamed fields, no case drift, no canonicalization drift.
-  4. Invalid inputs that are supposed to fail do fail cleanly, rather than being silently ignored or
+  4. If the task exposes a CLI or other real stdout examples, those examples have been checked for exact top-level
+     output shape/content — not merely for being valid compact JSON.
+  5. Invalid inputs that are supposed to fail do fail cleanly, rather than being silently ignored or
      converted into empty/partial success results.
-  5. Any relevant tests, checks, or validation steps required by the outcome pass, but passing self-authored
+  6. Any relevant tests, checks, or validation steps required by the outcome pass, but passing self-authored
      tests alone does NOT prove the contract is satisfied.
-  6. If the task exposes a CLI, package import surface, or JSON contract, those exact entry points have been
-     verified rather than only internal functions.
+  7. If the task exposes a CLI, package import surface, or other declared external contract, those exact entry
+     points have been verified rather than only internal functions.
+  8. For multi-operation tasks, verification covers representative outputs across multiple operations/risk classes,
+     not just one successful invocation pattern repeated mechanically.
+  9. If the outcome, examples, or visible evidence make a returned state/object structure explicit, the actual
+     visible external shape/schema matches it exactly: correct field names, required fields present, correct
+     top-level vs nested placement, and no silent collapsing of separately described values. If the prose is
+     ambiguous, require direct verification evidence instead of inventing a precise schema.
+  10. Invalid-case coverage is operation-specific where the outcome implies it — not just generic framing checks,
+      missing top-level args, or unknown-op checks.
+  11. Stateful, roundtrip, or summarization-heavy operations have been verified with depth appropriate to their
+      risk class, not merely with a single toy happy-path example.
   "Substantially achieved" does NOT mean "internal implementation exists but the promised surface is broken".
-  If the agent says tests pass but the required interface, import surface, output shape, canonical text, or
-  invalid-input behavior is wrong, that is NOT done.
+  If the agent says tests pass but the required interface, import surface, output shape/schema, canonical text,
+  or invalid-input behavior is wrong, that is NOT done.
 
 Respond ONLY with the raw JSON object — no prose, no markdown fences, no commentary, no \`\`\`json\`\`\` wrapper.
 Direct JSON output only.

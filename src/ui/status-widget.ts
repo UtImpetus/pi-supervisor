@@ -13,6 +13,7 @@ import { truncateToWidth } from "@mariozechner/pi-tui";
 import { loadSystemPrompt } from "../engine.js";
 import type { SupervisorState } from "../types.js";
 import { resolveSensitivityConfig } from "../types.js";
+import { SUPERVISOR_VERSION_LABEL } from "../version.js";
 
 const WIDGET_ID = "supervisor";
 const STATUS_ID = "supervisor";
@@ -96,8 +97,8 @@ export function updateUI(
   ctx.ui.setWidget(WIDGET_ID, (_tui, theme) => {
     const steerCount = snap.interventions.length;
 
-    // Header: ◉ Supervising
-    const header = `${theme.fg("accent", "◉")} ${theme.fg("accent", "Supervising")}`;
+    // Header: ◉ Supervising · vX
+    const header = `${theme.fg("accent", "◉")} ${theme.fg("accent", "Supervising")} ${theme.fg("dim", SUPERVISOR_VERSION_LABEL)}`;
     // Goal label + value
     const goalLabel = theme.fg("dim", "Goal:");
     const goalText  = theme.fg("muted", `"${truncate(snap.outcome, MAX_OUTCOME_DISPLAY)}"`);

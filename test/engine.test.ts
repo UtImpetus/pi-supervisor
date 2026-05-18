@@ -103,8 +103,10 @@ describe("loadSystemPrompt", () => {
     expect(deepseek.prompt).toContain("SELF-TEST MIRRORING");
     expect(deepseek.prompt).toContain("INVALID-INPUT LENIENCY");
     expect(deepseek.prompt).toContain("public API surface");
-    expect(deepseek.prompt).toContain("real JSON-facing input shape");
+    expect(deepseek.prompt).toContain("real external input shape");
     expect(deepseek.prompt).toContain("tests alone does NOT prove the contract is satisfied");
+    expect(deepseek.prompt).toContain("top-level output shape");
+    expect(deepseek.prompt).toContain("representative exact-output checks across different risk classes");
     expect(deepseek.source).toBe("built-in:deepseek");
   });
 

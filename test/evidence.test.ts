@@ -35,6 +35,18 @@ describe("buildEvidenceItem", () => {
 
     expect(item?.category).toBe("imports");
   });
+
+  it("detects top-level result wrappers in CLI/stdout examples", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{\"text\":\"x\"}}'" },
+      [{ type: "text", text: '{"result":{"metadata":{},"body":"x"}}' }],
+      false,
+    );
+
+    expect(item?.category).toBe("cli");
+    expect(item?.wrapperKey).toBe("result");
+  });
 });
 
 describe("collectEvidenceFromBranch", () => {
@@ -218,6 +230,7 @@ describe("evidence notes", () => {
       buildEvidenceItem("bash", { command: "python run_tests.py" }, [{ type: "text", text: "TESTS: passed=52 total=52" }], false)!,
       buildEvidenceItem("bash", { command: "python -c \"from pet_polyglot import parse_js_window_assignment\"" }, [{ type: "text", text: "ok" }], false)!,
       buildEvidenceItem("bash", { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" }, [{ type: "text", text: '{"cursor":0}' }], false)!,
+      buildEvidenceItem("bash", { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{\"text\":\"x\"}}'" }, [{ type: "text", text: '{"metadata":{},"body":"x"}' }], false)!,
       buildEvidenceItem("bash", { command: "python -m pet_polyglot 'not json' ; echo EXIT: 1" }, [{ type: "text", text: "Error: Invalid JSON\nEXIT: 1" }], false)!,
     ], true);
 
@@ -261,6 +274,36 @@ describe("summarizeEvidenceForPrompt", () => {
     );
   });
 
+  it("warns when CLI evidence is still wrapped in a top-level result object", () => {
+    const outcome = `Required public functions must be exposed from the package.\nSupported CLI operations:\n- parse_js_window_assignment\n- parse_markdown_front_matter\n- render_markdown_front_matter\nPackage mode: python -m pet_polyglot '<json request>' must print compact JSON only.`;
+    const snapshot = [
+      { role: "assistant" as const, content: "All 7 operations work end-to-end and output compact JSON." },
+    ];
+    const evidence = [
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot '{\"op\":\"parse_js_window_assignment\",\"args\":{}}'" },
+        [{ type: "text", text: '{"result":[1,2,3]}' }],
+        false,
+      )!,
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{}}'" },
+        [{ type: "text", text: '{"result":{"metadata":{},"body":"x"}}' }],
+        false,
+      )!,
+    ];
+
+    const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
+
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('top-level result object'),
+        expect.stringContaining('valid compact JSON is NOT enough'),
+      ]),
+    );
+  });
+
   it("avoids warnings once matching evidence exists", () => {
     const outcome = `Required public functions must be exposed from the package.\nPackage mode: python -m pet_polyglot '<json request>' must print compact JSON only.\nUnknown operations, malformed JSON, malformed arguments, or invalid data must exit non-zero.`;
     const snapshot = [
@@ -283,6 +326,12 @@ describe("summarizeEvidenceForPrompt", () => {
         "bash",
         { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
         [{ type: "text", text: '{"cursor":0}' }],
+        false,
+      )!,
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{\"text\":\"x\"}}'" },
+        [{ type: "text", text: '{"metadata":{},"body":"x"}' }],
         false,
       )!,
       buildEvidenceItem(

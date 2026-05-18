@@ -19,6 +19,7 @@ export interface SupervisorEvidenceItem {
   category: EvidenceCategory;
   summary: string;
   isError: boolean;
+  wrapperKey?: "result" | "data" | "output";
 }
 
 export interface EvidencePromptSummary {
@@ -41,6 +42,7 @@ const MAX_EXCERPT_LEN = 140;
 const MAX_NOTE_WARNINGS = 3;
 const MAX_NOTE_EVIDENCE = 4;
 const MAX_NOTE_CONTENT = 220;
+const TOP_LEVEL_WRAPPER_RE = /^\s*\{\s*"(result|data|output)"\s*:/;
 
 export interface SupervisorEvidenceSnapshot {
   items: SupervisorEvidenceItem[];
@@ -79,6 +81,12 @@ function isEntryAtOrAfter(entry: any, sinceTimestamp?: number): boolean {
   if (sinceTimestamp === undefined) return true;
   const ts = getEntryTimestampMs(entry);
   return ts === null ? false : ts >= sinceTimestamp;
+}
+
+function detectTopLevelWrapper(text: string): "result" | "data" | "output" | null {
+  const match = text.trim().match(TOP_LEVEL_WRAPPER_RE);
+  const key = match?.[1];
+  return key === "result" || key === "data" || key === "output" ? key : null;
 }
 
 function classifyBashCommand(command: string, excerpt: string): EvidenceCategory {
@@ -121,11 +129,14 @@ export function buildEvidenceItem(
 
   if (toolName === "bash") {
     const command = typeof input?.command === "string" ? input.command : "(unknown command)";
+    const rawText = extractText(content);
     const category = classifyBashCommand(command, excerpt);
+    const wrapperKey = category === "cli" ? detectTopLevelWrapper(rawText) : null;
     return {
       toolName,
       category,
       isError,
+      wrapperKey: wrapperKey ?? undefined,
       summary: `${isError ? "ERR" : "OK"} bash \`${truncate(squash(command), MAX_SUMMARY_LEN)}\`${excerpt ? ` → ${excerpt}` : ""}`,
     };
   }
@@ -191,7 +202,8 @@ function isEvidenceItem(value: unknown): value is SupervisorEvidenceItem {
     typeof item.toolName === "string" &&
     isEvidenceCategory(item.category) &&
     typeof item.summary === "string" &&
-    typeof item.isError === "boolean"
+    typeof item.isError === "boolean" &&
+    (item.wrapperKey === undefined || item.wrapperKey === "result" || item.wrapperKey === "data" || item.wrapperKey === "output")
   );
 }
 
@@ -273,6 +285,11 @@ function outcomeNeedsInvalidVerification(outcome: string): boolean {
   return /invalid|malformed|unknown operation|unknown operations|exit non-zero|fail cleanly/.test(lower);
 }
 
+function outcomeNeedsBroadOperationCoverage(outcome: string): boolean {
+  const lower = outcome.toLowerCase();
+  return /supported cli operations|required public functions|all seven|all 7|7 ops|7 operations|one positive request per operation/.test(lower);
+}
+
 export function summarizeEvidenceForPrompt(
   outcome: string,
   snapshot: ConversationMessage[],
@@ -286,6 +303,8 @@ export function summarizeEvidenceForPrompt(
   const assistantClaimsTests = hasAssistantClaim(snapshot, /tests? pass|all .*tests? pass|passed\s+\d+\/?\d*\s+tests?|\b52\/52\b|\bverified\b/);
   const assistantClaimsCli = hasAssistantClaim(snapshot, /\bcli\b|end-to-end|all .*operations|all .*ops|entrypoint|entry point/);
   const assistantClaimsDone = hasAssistantClaim(snapshot, /\ball done\b|\bfinal state\b|\bcompleted\b|\bcomplete\b/);
+  const cliEvidence = items.filter((item) => item.category === "cli");
+  const wrappedCliOutputs = cliEvidence.filter((item) => item.wrapperKey !== undefined);
 
   if ((assistantClaimsTests || assistantClaimsDone || agentIsIdle) && outcomeNeedsCliVerification(outcome)) {
     if (categories.has("tests") && !categories.has("cli")) {
@@ -293,6 +312,15 @@ export function summarizeEvidenceForPrompt(
     } else if (assistantClaimsCli && !categories.has("cli")) {
       warnings.push("Assistant claims CLI or end-to-end verification, but recent tool evidence does not show a real CLI/entrypoint invocation.");
     }
+  }
+
+  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && wrappedCliOutputs.length > 0) {
+    const keys = [...new Set(wrappedCliOutputs.map((item) => item.wrapperKey))].filter(Boolean).join(", ");
+    warnings.push(`Recent CLI/stdout examples appear wrapped in a top-level ${keys || "result"} object. If the task expects a raw list/dict/string, valid compact JSON is NOT enough — the top-level output shape is still wrong.`);
+  }
+
+  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeNeedsBroadOperationCoverage(outcome) && cliEvidence.length > 0 && cliEvidence.length < 2) {
+    warnings.push("Recent CLI verification does not yet show representative breadth across the required operation surface. Verify exact outputs on multiple representative operations, not just one successful invocation.");
   }
 
   if ((assistantClaimsDone || agentIsIdle) && outcomeNeedsImportVerification(outcome) && !categories.has("imports")) {
@@ -317,7 +345,7 @@ function dedupeEvidenceItems(items: SupervisorEvidenceItem[], maxItems: number):
 
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;
-    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}`;
+    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}|${item.wrapperKey ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);

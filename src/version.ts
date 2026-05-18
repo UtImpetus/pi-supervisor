@@ -1,0 +1,2 @@
+export const SUPERVISOR_VERSION = "0.4.3";
+export const SUPERVISOR_VERSION_LABEL = `v${SUPERVISOR_VERSION}`;

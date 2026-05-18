@@ -263,14 +263,18 @@ The extension ships with built-in prompts for certain model families. These are 
 
 ### Learning project-specific supervisor rules from a session
 
-Use `/supervise:lesson-learned [optional guidance]` to derive a project-local supervisor prompt from the **current branch session**. The command:
+Use `/supervise:lesson-learned [optional guidance]` to derive a project-local supervisor prompt from the **current branch session**. The command now builds a structured lesson bundle before drafting the prompt. It:
 
 1. reads the current branch session transcript,
-2. incorporates any recorded supervisor interventions when present,
-3. starts from the built-in supervisor prompt for the currently selected supervisor model,
-4. generates a full `.pi/SUPERVISOR.md` proposal,
-5. opens that proposal in an interactive editor preview,
-6. writes `.pi/SUPERVISOR.md` only after you save/confirm the edited text.
+2. extracts recorded supervisor interventions when present,
+3. extracts visible supervisor evidence notes and key verification tool outputs,
+4. proposes structured lesson candidates (including anti-lessons / "do not overfit this" guidance),
+5. runs a critique pass over accepted candidates to catch overfit or weak lessons,
+6. filters low-confidence, generic, duplicate, and clearly overfit candidates,
+7. starts from the built-in supervisor prompt for the currently selected supervisor model,
+8. generates a full `.pi/SUPERVISOR.md` proposal,
+9. opens that proposal in an interactive editor preview,
+10. writes `.pi/SUPERVISOR.md` only after you save/confirm the edited text.
 
 This works even if supervision was never active in the session — the command can still infer lessons from the full branch behavior.
 
@@ -284,6 +288,7 @@ The learned prompt is intended to capture:
 - project-specific failure modes,
 - project-specific verification checklist items,
 - project-specific steering style/tactics,
+- anti-lessons when the session shows a bad supervisory overreach,
 
 while avoiding generic advice already covered by the built-in prompt.
 

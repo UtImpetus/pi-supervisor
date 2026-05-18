@@ -79,9 +79,10 @@ describe("status-widget", () => {
     expect(lines.length).toBe(2);
   });
 
-  it("line 1 contains Supervising and Goal", () => {
+  it("line 1 contains Supervising, version, and Goal", () => {
     const lines = captureRender(makeState());
     expect(lines[0]).toContain("Supervising");
+    expect(lines[0]).toContain("v0.4.3");
     expect(lines[0]).toContain("Goal:");
     expect(lines[0]).toContain("Refactor auth module");
   });
