@@ -55,8 +55,8 @@ Rules:
 - Checklist items are required completion checks before the task may be considered done.
 - Choose the highest-risk externally visible contract checks, not generic boilerplate. Prefer exact imports/exports, CLI/request format, output shape/schema, operation-specific invalid cases, roundtrip behavior, stateful semantics, and exact summary output.
 - Do NOT waste checklist slots on shallow checks like "function exists", "types roughly match", or "tests pass" when the outcome requires deeper semantic verification.
-- If the outcome includes stateful editors, simulators, cursor/text state, or event sequences, include a checklist item for exact returned state keys/schema plus representative multi-step transitions and invalid-event behavior.
-- If the outcome includes analyzers, summaries, manifests, or structured reports, include a checklist item for exact top-level keys/schema and representative fixture outputs. Watch for alternate schemas like list-vs-dict drift or extra regrouped keys.
+- If the outcome includes stateful editors, simulators, cursor/text state, or event sequences, include a checklist item for representative multi-step transitions, invalid-event behavior, and returned state shape. Only demand exact key names/schema when they are explicit in the outcome, examples, or observed outputs; otherwise require raw output evidence instead of inventing keys.
+- If the outcome includes analyzers, summaries, manifests, or structured reports, include a checklist item for top-level keys/schema and representative fixture outputs. Demand exact keys only when the contract or examples make them explicit. Watch for alternate schemas like list-vs-dict drift or extra regrouped keys.
 - If the outcome includes feeds, posts, replies, timestamps, ordering, or markers, include a checklist item for reply association/order semantics and invalid timestamp or malformed-marker handling.
 - If the outcome includes ANSI/terminal rendering or escape-sequence handling, include a checklist item for exact visible output, OSC/DCS skipping, malformed escape handling, and any explicitly required color/readability behavior.
 - If the outcome includes parse/render pairs or front matter, include a checklist item for roundtrip integrity using the required scalar/list/null types and another item for malformed/unclosed input behavior when failure semantics are required.
@@ -80,8 +80,9 @@ Rules:
 - Assistant claims and self-authored tests are not sufficient by themselves. Prefer direct tool evidence from real CLI output, exact JSON payloads, imports, fixture outputs, and explicit invalid-case runs.
 - Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough when the contract requires exact field names, exact keys/schema, state transitions, ordering/reply semantics, roundtrip fidelity, or operation-specific failure behavior.
 - If recent evidence suggests suspicious schema drift (for example alternate key names, list-vs-dict regrouping, wrapper payloads, or cursor_index vs cursor style mismatches), use "needs_work" unless the exact required external shape is directly evidenced.
+- Do NOT invent exact field names from ambiguous prose alone. For example, wording like "track cursor index, line, column" does not by itself prove whether the output keys must be \`cursor\`, \`cursor_index\`, \`cursor_line\`, \`column\`, etc. When exact names are not directly evidenced by the outcome, examples, tests, or raw tool output, ask for raw output verification instead of prescribing invented keys.
 - If the item is about invalid behavior, require direct evidence for the specific risky operation named in the item, not only generic malformed JSON / unknown-op checks.
-- The message should tell the coding agent exactly what to verify/fix for this checklist item, including which command/fixture/output to show when possible.
+- The message should tell the coding agent exactly what to verify/fix for this checklist item, including which command/fixture/output to show when possible. When schema names are ambiguous, ask to show the raw output/state and compare it to the task wording rather than asserting exact invented keys.
 - No prose outside JSON.`;
 
 /** Built-in fallback system prompt (default, used when no model-specific match). */

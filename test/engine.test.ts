@@ -183,6 +183,7 @@ describe("checklist prompts", () => {
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Choose the highest-risk externally visible contract checks");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Do NOT waste checklist slots on shallow checks");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("stateful editors, simulators");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Only demand exact key names/schema when they are explicit");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("feeds, posts, replies, timestamps");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("ANSI/terminal rendering");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("operation-specific invalid behavior");
@@ -193,6 +194,9 @@ describe("checklist prompts", () => {
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("schema drift");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("cursor_index vs cursor");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Do NOT invent exact field names from ambiguous prose alone");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("track cursor index, line, column");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("ask for raw output verification instead of prescribing invented keys");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("not only generic malformed JSON / unknown-op checks");
   });
 });
