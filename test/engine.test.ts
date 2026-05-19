@@ -2,7 +2,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSnapshot, extractCompactionSummary, findBuiltinModelPrompt, formatRuntimeHeuristicsForPrompt, loadSystemPrompt } from "../src/engine.js";
+import {
+  buildSnapshot,
+  CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT,
+  CHECKLIST_REVIEW_SYSTEM_PROMPT,
+  extractCompactionSummary,
+  findBuiltinModelPrompt,
+  formatChecklistForPrompt,
+  loadSystemPrompt,
+} from "../src/engine.js";
 
 // Build a minimal ExtensionContext that only exposes the bits engine.ts touches.
 function makeCtx(branch: any[]): any {
@@ -141,31 +149,51 @@ describe("loadSystemPrompt", () => {
   });
 });
 
-describe("formatRuntimeHeuristicsForPrompt", () => {
-  it("formats a compact runtime check plan for the supervisor prompt", () => {
-    const section = formatRuntimeHeuristicsForPrompt([
+describe("formatChecklistForPrompt", () => {
+  it("formats a compact completion checklist for the supervisor prompt", () => {
+    const section = formatChecklistForPrompt([
       {
         id: "imports",
-        kind: "imports",
-        priority: "high",
-        warning: "Verify public imports",
-        derivedFrom: "explicit_outcome",
+        title: "Verify public imports",
+        description: "Required public functions must be importable from the package surface.",
+        verificationPrompt: "Run the import check and fix any missing exports before finishing.",
+        status: "pending",
+        attempts: 0,
       },
       {
-        id: "schema",
-        kind: "schema_keys",
-        priority: "medium",
-        warning: "Watch suspicious key drift",
-        operations: ["simulate_editor"],
-        requiredKeys: ["cursor", "line", "column"],
-        suspiciousKeys: ["cursor_col", "cursor_idx"],
+        id: "cli-shape",
+        title: "Verify CLI output shape",
+        description: "CLI stdout must match the external contract exactly.",
+        verificationPrompt: "Run representative CLI calls and compare raw stdout to the required shape.",
+        status: "passed",
+        attempts: 1,
       },
     ]);
 
-    expect(section).toContain("RUNTIME CHECK PLAN");
+    expect(section).toContain("COMPLETION CHECKLIST");
     expect(section).toContain("Verify public imports");
-    expect(section).toContain("simulate_editor");
-    expect(section).toContain("cursor_col");
+    expect(section).toContain("[pending]");
+    expect(section).toContain("[passed]");
+  });
+});
+
+describe("checklist prompts", () => {
+  it("steers checklist generation toward high-risk semantic checks", () => {
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Generate 3 to 20 checklist items");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Choose the highest-risk externally visible contract checks");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("Do NOT waste checklist slots on shallow checks");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("stateful editors, simulators");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("feeds, posts, replies, timestamps");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("ANSI/terminal rendering");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("operation-specific invalid behavior");
+  });
+
+  it("requires exact evidence for checklist review instead of shallow proof", () => {
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Assistant claims and self-authored tests are not sufficient");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("schema drift");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("cursor_index vs cursor");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("not only generic malformed JSON / unknown-op checks");
   });
 });
 

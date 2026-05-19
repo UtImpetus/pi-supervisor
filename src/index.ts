@@ -22,13 +22,14 @@ import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { parseLegacySuperviseInvocation } from "./command-routing.js";
 import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";
-import { analyze, buildSnapshot, generateRuntimeHeuristics, loadBuiltinSystemPrompt, loadSystemPrompt } from "./engine.js";
+import { analyze, buildSnapshot, generateCompletionChecklist, loadBuiltinSystemPrompt, loadSystemPrompt, reviewChecklistItem } from "./engine.js";
 import {
   buildEvidenceNote,
   findLastEvidenceNoteContent,
   getEvidenceEntryType,
   getEvidenceMessageType,
   SupervisorEvidenceTracker,
+  summarizeEvidenceForPrompt,
 } from "./evidence.js";
 import { formatSupervisorCheckpointLabel, mergeSupervisorTreeLabel } from "./labels.js";
 import {
@@ -306,6 +307,62 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  const runChecklistGate = async (ctx: ExtensionContext, s: NonNullable<ReturnType<typeof state.getState>>): Promise<"steer" | "summary" | "complete" | "skip"> => {
+    const checklist = state.getState()?.completionChecklist;
+    if (!checklist || checklist.status !== "ready") return "skip";
+
+    if (checklist.currentIndex >= checklist.items.length) {
+      if (!checklist.summaryRequested) {
+        state.setChecklistSummaryRequested(true);
+        const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
+        sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+        return "summary";
+      }
+      return "complete";
+    }
+
+    const item = getCurrentChecklistItem();
+    if (!item) return "skip";
+
+    const snapshot = buildSnapshot(ctx, resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig).messageLimit);
+    const evidenceSummary = summarizeEvidenceForPrompt(s.outcome, snapshot, evidence.getRecent(), true);
+    const review = await reviewChecklistItem(
+      ctx,
+      s.provider,
+      s.modelId,
+      s.outcome,
+      item,
+      snapshot,
+      evidenceSummary.lines,
+      evidenceSummary.warnings,
+      getDebugOptions(ctx),
+    );
+
+    if (review.status === "passed") {
+      state.markCurrentChecklistItemPassed();
+      const nextItem = getCurrentChecklistItem();
+      if (!nextItem) {
+        const updated = state.getState()!;
+        if (!updated.completionChecklist?.summaryRequested) {
+          state.setChecklistSummaryRequested(true);
+          const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
+          sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+          return "summary";
+        }
+        return "complete";
+      }
+
+      const message = `Checklist check (${nextItem.title}): ${nextItem.verificationPrompt}`;
+      sendChecklistMessage(ctx, state.getState()!, message, `Checklist item passed; moving to next check. ${review.reasoning}`.trim());
+      return "steer";
+    }
+
+    state.incrementCurrentChecklistAttempt();
+    const message = review.message?.trim() || `Checklist check (${item.title}): ${item.verificationPrompt}`;
+    sendChecklistMessage(ctx, state.getState()!, message, review.reasoning || `Checklist item requires more verification: ${item.title}`);
+    return "steer";
+  };
+
   // ---- After each agent run: analyze + steer ----
   // agent_end fires once per user prompt, always with the agent idle and waiting for input.
   // This is the critical checkpoint for all sensitivity levels.
@@ -350,6 +407,11 @@ export default function (pi: ExtensionAPI) {
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
       pi.sendUserMessage(decision.message);
     } else if (decision.action === "done") {
+      const checklistResult = await runChecklistGate(ctx, s);
+      if (checklistResult === "steer" || checklistResult === "summary") {
+        return;
+      }
+
       idleSteers = 0;
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("done", s.turnCount));
       updateUI(ctx, state.getState(), { type: "done" });
@@ -533,7 +595,43 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Updated ${targetPath} from current session lessons.`, "info");
   };
 
-  const bootstrapRuntimeHeuristics = async (
+  const getChecklistLabel = (supervisorState: ReturnType<typeof state.getState>): string => {
+    const checklist = supervisorState?.completionChecklist;
+    if (!checklist) return "";
+    if (checklist.status === "failed") return " | checks: fallback";
+    if (checklist.status === "pending") return " | checks: setting up";
+    const passed = checklist.items.filter((item) => item.status === "passed").length;
+    return ` | checks: ${passed}/${checklist.count}`;
+  };
+
+  const getCurrentChecklistItem = () => {
+    const checklist = state.getState()?.completionChecklist;
+    if (!checklist || checklist.status !== "ready") return null;
+    return checklist.items[checklist.currentIndex] ?? null;
+  };
+
+  const sendChecklistMessage = (
+    ctx: ExtensionContext,
+    s: NonNullable<ReturnType<typeof state.getState>>,
+    message: string,
+    reasoning: string,
+  ) => {
+    idleSteers++;
+    state.addIntervention({
+      turnCount: s.turnCount,
+      message,
+      reasoning,
+      timestamp: Date.now(),
+    });
+    labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("steer", state.getState()?.interventions.length));
+    const resolvedSensitivity = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
+    const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
+    emitEvidenceNote(note);
+    updateUI(ctx, state.getState(), { type: "steering", message });
+    pi.sendUserMessage(message);
+  };
+
+  const bootstrapCompletionChecklist = async (
     ctx: ExtensionContext,
     provider: string,
     modelId: string,
@@ -541,16 +639,16 @@ export default function (pi: ExtensionAPI) {
   ): Promise<string> => {
     updateUI(ctx, state.getState(), { type: "bootstrapping", summary: "setting up checks…" });
 
-    const runtimeHeuristics = await generateRuntimeHeuristics(ctx, provider, modelId, outcome, getDebugOptions(ctx));
-    if (runtimeHeuristics.length > 0) {
-      state.setRuntimeHeuristics(runtimeHeuristics);
+    const checklistItems = await generateCompletionChecklist(ctx, provider, modelId, outcome, getDebugOptions(ctx));
+    if (checklistItems.length > 0) {
+      state.setCompletionChecklist(checklistItems);
       updateUI(ctx, state.getState());
-      return ` | checks: ${runtimeHeuristics.length}`;
+      return getChecklistLabel(state.getState());
     }
 
-    state.setHeuristicSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No heuristics generated" });
+    state.setChecklistSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No checklist generated" });
     updateUI(ctx, state.getState());
-    return " | checks: fallback";
+    return getChecklistLabel(state.getState());
   };
 
   const startSupervisionRun = async (ctx: ExtensionContext, outcome: string) => {
@@ -579,7 +677,7 @@ export default function (pi: ExtensionAPI) {
     resetRunEvidence();
     labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
 
-    const checkLabel = await bootstrapRuntimeHeuristics(ctx, provider, modelId, outcome);
+    const checkLabel = await bootstrapCompletionChecklist(ctx, provider, modelId, outcome);
 
     const { source } = loadSystemPrompt(ctx.cwd, modelId);
     const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");
@@ -755,7 +853,7 @@ export default function (pi: ExtensionAPI) {
       resetRunEvidence();
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
 
-      const checkLabel = await bootstrapRuntimeHeuristics(ctx, provider, modelId, params.outcome);
+      const checkLabel = await bootstrapCompletionChecklist(ctx, provider, modelId, params.outcome);
 
       const { source } = loadSystemPrompt(ctx.cwd, modelId);
       const promptLabel = source.startsWith("built-in") ? source.replace("built-in", "built-in prompt") : source.replace(ctx.cwd, ".");

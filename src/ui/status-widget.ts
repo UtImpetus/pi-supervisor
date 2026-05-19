@@ -92,8 +92,7 @@ export function updateUI(
     sensitivity: state.sensitivity,
     sensitivityConfig: resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig),
     interventions: [...state.interventions],
-    runtimeHeuristics: [...(state.runtimeHeuristics ?? [])],
-    heuristicSetup: state.heuristicSetup,
+    completionChecklist: state.completionChecklist,
   };
   const snapAction = action;
 
@@ -116,15 +115,15 @@ export function updateUI(
     const sensitivity = theme.fg("dim", `sensitivity: ${sensitivityLabel}`);
     // Steer count
     const steers = steerCount > 0 ? theme.fg("dim", `↗ ${steerCount}`) : "";
-    const checks = snap.heuristicSetup?.status === "pending"
+    const checklist = snap.completionChecklist;
+    const passedChecks = checklist?.items.filter((item) => item.status === "passed").length ?? 0;
+    const checks = checklist?.status === "pending"
       ? theme.fg("dim", "checks: setting up")
-      : snap.heuristicSetup?.status === "failed"
-        ? theme.fg("dim", `checks: failed${snap.heuristicSetup.error ? "" : ""}`)
-        : snap.runtimeHeuristics.length > 0
-          ? theme.fg("dim", `checks: ${snap.runtimeHeuristics.length}`)
-          : snap.heuristicSetup?.status === "ready"
-            ? theme.fg("dim", "checks: 0")
-            : "";
+      : checklist?.status === "failed"
+        ? theme.fg("dim", "checks: fallback")
+        : checklist?.status === "ready"
+          ? theme.fg("dim", `checks: ${passedChecks}/${checklist.count}`)
+          : "";
 
     // Current action
     let actionStr: string;

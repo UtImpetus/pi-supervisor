@@ -17,37 +17,30 @@ export interface SensitivityConfig {
 
 export type SupervisorAction = "continue" | "steer" | "done";
 
-export type RuntimeHeuristicKind =
-  | "line_limit"
-  | "imports"
-  | "cli_surface"
-  | "invalid_cases"
-  | "schema_keys"
-  | "breadth"
-  | "roundtrip";
-
-export type RuntimeHeuristicPriority = "high" | "medium" | "low";
-export type RuntimeHeuristicSource = "explicit_outcome" | "examples" | "inferred";
-
-export interface RuntimeHeuristic {
+export interface CompletionChecklistItem {
   id: string;
-  kind: RuntimeHeuristicKind;
-  priority: RuntimeHeuristicPriority;
-  warning: string;
-  appliesWhen?: string;
-  paths?: string[];
-  operations?: string[];
-  requiredKeys?: string[];
-  suspiciousKeys?: string[];
-  lineLimit?: number;
-  derivedFrom?: RuntimeHeuristicSource;
+  title: string;
+  description: string;
+  verificationPrompt: string;
+  status: "pending" | "passed";
+  attempts: number;
 }
 
-export interface RuntimeHeuristicSetup {
+export interface CompletionChecklist {
   status: "pending" | "ready" | "failed";
   count: number;
   source?: "bootstrap-llm";
   error?: string;
+  currentIndex: number;
+  summaryRequested: boolean;
+  items: CompletionChecklistItem[];
+}
+
+export interface ChecklistReviewDecision {
+  status: "passed" | "needs_work";
+  message?: string;
+  reasoning: string;
+  confidence: number;
 }
 
 /** A single intervention record */
@@ -120,8 +113,7 @@ export interface SupervisorState {
   interventions: SupervisorIntervention[];
   startedAt: number;
   turnCount: number;
-  runtimeHeuristics?: RuntimeHeuristic[];
-  heuristicSetup?: RuntimeHeuristicSetup;
+  completionChecklist?: CompletionChecklist;
 }
 
 /** Persisted supervisor defaults/preferences used when supervision is inactive. */

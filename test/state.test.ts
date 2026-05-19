@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SupervisorStateManager } from "../src/state.js";
-import type { RuntimeHeuristic, SupervisorPreferences, SupervisorState } from "../src/types.js";
+import type { CompletionChecklistItem, SupervisorPreferences, SupervisorState } from "../src/types.js";
 
 function makePi() {
   return {
@@ -30,8 +30,13 @@ describe("SupervisorStateManager", () => {
       sensitivity: "high",
       interventions: [],
       turnCount: 0,
-      runtimeHeuristics: [],
-      heuristicSetup: { status: "pending", count: 0 },
+      completionChecklist: {
+        status: "pending",
+        count: 0,
+        currentIndex: 0,
+        summaryRequested: false,
+        items: [],
+      },
     });
     expect(mgr.getState()?.startedAt).toBeGreaterThan(0);
     expect(mgr.getPreferences()).toEqual({
@@ -204,42 +209,67 @@ describe("SupervisorStateManager", () => {
     expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { widgetVisible: false, debugPayloads: true });
   });
 
-  it("stores runtime heuristics and marks setup ready", () => {
+  it("stores completion checklist and marks setup ready", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);
     mgr.start("goal", "anthropic", "model", "medium");
     pi.appendEntry.mockClear();
 
-    const heuristics: RuntimeHeuristic[] = [
-      { id: "imports", kind: "imports", priority: "high", warning: "Verify imports", derivedFrom: "explicit_outcome" },
-      { id: "schema", kind: "schema_keys", priority: "medium", warning: "Verify keys", suspiciousKeys: ["cursor_col"] },
+    const items: Array<Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">> = [
+      { id: "imports", title: "Verify imports", description: "Public imports must work", verificationPrompt: "Run the import check and fix any missing exports." },
+      { id: "cli", title: "Verify CLI", description: "CLI output must match the contract", verificationPrompt: "Run representative CLI checks and fix any drift." },
     ];
-    mgr.setRuntimeHeuristics(heuristics);
+    mgr.setCompletionChecklist(items);
 
-    expect(mgr.getState()).toMatchObject({
-      runtimeHeuristics: heuristics,
-      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
+    expect(mgr.getState()?.completionChecklist).toEqual({
+      status: "ready",
+      count: 2,
+      source: "bootstrap-llm",
+      currentIndex: 0,
+      summaryRequested: false,
+      items: [
+        { ...items[0], status: "pending", attempts: 0 },
+        { ...items[1], status: "pending", attempts: 0 },
+      ],
     });
-    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-state", expect.objectContaining({
-      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
-    }));
   });
 
-  it("can mark heuristic setup failed without stopping supervision", () => {
+  it("can mark checklist setup failed without stopping supervision", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);
     mgr.start("goal", "anthropic", "model", "medium");
     pi.appendEntry.mockClear();
 
-    mgr.setHeuristicSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No heuristics generated" });
+    mgr.setChecklistSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No checklist generated" });
 
     expect(mgr.isActive()).toBe(true);
-    expect(mgr.getState()?.heuristicSetup).toEqual({
+    expect(mgr.getState()?.completionChecklist).toMatchObject({
       status: "failed",
       count: 0,
       source: "bootstrap-llm",
-      error: "No heuristics generated",
+      error: "No checklist generated",
     });
+  });
+
+  it("advances checklist items and tracks summary-request state", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+    mgr.start("goal", "anthropic", "model", "medium");
+    mgr.setCompletionChecklist([
+      { id: "imports", title: "Verify imports", description: "Public imports must work", verificationPrompt: "Check imports." },
+      { id: "cli", title: "Verify CLI", description: "CLI output must match the contract", verificationPrompt: "Check CLI." },
+    ]);
+    pi.appendEntry.mockClear();
+
+    mgr.incrementCurrentChecklistAttempt();
+    expect(mgr.getState()?.completionChecklist?.items[0]?.attempts).toBe(1);
+
+    mgr.markCurrentChecklistItemPassed();
+    expect(mgr.getState()?.completionChecklist?.currentIndex).toBe(1);
+    expect(mgr.getState()?.completionChecklist?.items[0]?.status).toBe("passed");
+
+    mgr.setChecklistSummaryRequested(true);
+    expect(mgr.getState()?.completionChecklist?.summaryRequested).toBe(true);
   });
 
   it("loadFromSession picks the most recent supervisor state and preferences independently", () => {

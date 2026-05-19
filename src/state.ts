@@ -4,8 +4,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type {
-  RuntimeHeuristic,
-  RuntimeHeuristicSetup,
+  CompletionChecklist,
+  CompletionChecklistItem,
   Sensitivity,
   SensitivityConfig,
   SupervisorIntervention,
@@ -40,8 +40,13 @@ export class SupervisorStateManager {
       interventions: [],
       startedAt: Date.now(),
       turnCount: 0,
-      runtimeHeuristics: [],
-      heuristicSetup: { status: "pending", count: 0 },
+      completionChecklist: {
+        status: "pending",
+        count: 0,
+        currentIndex: 0,
+        summaryRequested: false,
+        items: [],
+      },
     };
     this.preferences = {
       ...this.preferences,
@@ -91,20 +96,56 @@ export class SupervisorStateManager {
     this.state.turnCount++;
   }
 
-  setRuntimeHeuristics(heuristics: RuntimeHeuristic[]): void {
+  setCompletionChecklist(items: Array<Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">>): void {
     if (!this.state) return;
-    this.state.runtimeHeuristics = [...heuristics];
-    this.state.heuristicSetup = {
+    this.state.completionChecklist = {
       status: "ready",
-      count: heuristics.length,
+      count: items.length,
       source: "bootstrap-llm",
+      currentIndex: 0,
+      summaryRequested: false,
+      items: items.map((item) => ({ ...item, status: "pending", attempts: 0 })),
     };
     this.persistState();
   }
 
-  setHeuristicSetup(setup: RuntimeHeuristicSetup): void {
+  setChecklistSetup(checklist: Pick<CompletionChecklist, "status" | "count" | "source" | "error">): void {
     if (!this.state) return;
-    this.state.heuristicSetup = { ...setup };
+    const current = this.state.completionChecklist ?? {
+      status: "pending",
+      count: 0,
+      currentIndex: 0,
+      summaryRequested: false,
+      items: [],
+    };
+    this.state.completionChecklist = {
+      ...current,
+      ...checklist,
+    };
+    this.persistState();
+  }
+
+  markCurrentChecklistItemPassed(): void {
+    if (!this.state?.completionChecklist) return;
+    const checklist = this.state.completionChecklist;
+    const item = checklist.items[checklist.currentIndex];
+    if (!item) return;
+    item.status = "passed";
+    checklist.currentIndex = Math.min(checklist.currentIndex + 1, checklist.items.length);
+    this.persistState();
+  }
+
+  incrementCurrentChecklistAttempt(): void {
+    if (!this.state?.completionChecklist) return;
+    const item = this.state.completionChecklist.items[this.state.completionChecklist.currentIndex];
+    if (!item) return;
+    item.attempts += 1;
+    this.persistState();
+  }
+
+  setChecklistSummaryRequested(requested: boolean): void {
+    if (!this.state?.completionChecklist) return;
+    this.state.completionChecklist.summaryRequested = requested;
     this.persistState();
   }
 

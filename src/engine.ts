@@ -22,11 +22,9 @@ import type { SupervisorEvidenceItem } from "./evidence.js";
 import { summarizeEvidenceForPrompt } from "./evidence.js";
 import { callModel, callSupervisorModel } from "./model-client.js";
 import type {
+  ChecklistReviewDecision,
+  CompletionChecklistItem,
   ConversationMessage,
-  RuntimeHeuristic,
-  RuntimeHeuristicKind,
-  RuntimeHeuristicPriority,
-  RuntimeHeuristicSource,
   SensitivityConfig,
   SteeringDecision,
   SupervisorState,
@@ -38,34 +36,52 @@ import { resolveSensitivityConfig } from "./types.js";
 const SUPERVISOR_MD = "SUPERVISOR.md";
 const CONFIG_DIR = ".pi";
 const GLOBAL_AGENT_DIR = join(homedir(), ".pi", "agent");
-const MAX_RUNTIME_HEURISTICS = 8;
+const MAX_CHECKLIST_ITEMS = 20;
 
-const HEURISTIC_BOOTSTRAP_SYSTEM_PROMPT = `You generate concise runtime supervision heuristics for a coding-task supervisor.
+export const CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT = `You generate a short completion checklist for a coding-task supervisor.
 Return ONLY valid JSON with this exact shape:
 {
-  "heuristics": [
+  "items": [
     {
       "id": "short-kebab-id",
-      "kind": "line_limit" | "imports" | "cli_surface" | "invalid_cases" | "schema_keys" | "breadth" | "roundtrip",
-      "priority": "high" | "medium" | "low",
-      "warning": "short warning",
-      "appliesWhen": "optional short condition",
-      "paths": ["optional paths/globs"],
-      "operations": ["optional operation names"],
-      "requiredKeys": ["optional exact keys"],
-      "suspiciousKeys": ["optional suspicious alternate keys"],
-      "lineLimit": 123,
-      "derivedFrom": "explicit_outcome" | "examples" | "inferred"
+      "title": "short title",
+      "description": "what must be true before task completion",
+      "verificationPrompt": "what the coding agent should re-check and fix before finishing"
     }
   ]
 }
 Rules:
-- Generate 0 to 8 heuristics only.
-- Prefer explicit_outcome over examples over inferred.
-- Only include exact key/schema heuristics when the outcome or examples make them explicit.
-- Do NOT invent precise schemas from ambiguous prose.
-- Keep warnings short and concrete.
-- Focus on checks that can help interpret runtime evidence.
+- Generate 3 to 20 checklist items whenever the outcome has multiple non-trivial requirements. Broad tasks with many distinct risk surfaces should use more items; use fewer only for genuinely tiny tasks.
+- Checklist items are required completion checks before the task may be considered done.
+- Choose the highest-risk externally visible contract checks, not generic boilerplate. Prefer exact imports/exports, CLI/request format, output shape/schema, operation-specific invalid cases, roundtrip behavior, stateful semantics, and exact summary output.
+- Do NOT waste checklist slots on shallow checks like "function exists", "types roughly match", or "tests pass" when the outcome requires deeper semantic verification.
+- If the outcome includes stateful editors, simulators, cursor/text state, or event sequences, include a checklist item for exact returned state keys/schema plus representative multi-step transitions and invalid-event behavior.
+- If the outcome includes analyzers, summaries, manifests, or structured reports, include a checklist item for exact top-level keys/schema and representative fixture outputs. Watch for alternate schemas like list-vs-dict drift or extra regrouped keys.
+- If the outcome includes feeds, posts, replies, timestamps, ordering, or markers, include a checklist item for reply association/order semantics and invalid timestamp or malformed-marker handling.
+- If the outcome includes ANSI/terminal rendering or escape-sequence handling, include a checklist item for exact visible output, OSC/DCS skipping, malformed escape handling, and any explicitly required color/readability behavior.
+- If the outcome includes parse/render pairs or front matter, include a checklist item for roundtrip integrity using the required scalar/list/null types and another item for malformed/unclosed input behavior when failure semantics are required.
+- Include at least one item for operation-specific invalid behavior for the riskiest public operations, not just generic malformed JSON or unknown-op handling.
+- Keep each item concrete, evidence-oriented, and runnable as a re-check.
+- Do NOT generate implementation-plan steps.
+- Do NOT generate generic advice like "review the code".
+- No prose outside JSON.`;
+
+export const CHECKLIST_REVIEW_SYSTEM_PROMPT = `You review one completion checklist item for a coding-task supervisor.
+Return ONLY valid JSON with this exact shape:
+{
+  "status": "passed" | "needs_work",
+  "message": "short steer message when more verification/fixing is needed",
+  "reasoning": "brief explanation",
+  "confidence": 0.0
+}
+Rules:
+- Use "passed" only when recent evidence makes this checklist item clearly satisfied.
+- Use "needs_work" when evidence is missing, contradictory, incomplete, or only proves a shallow approximation.
+- Assistant claims and self-authored tests are not sufficient by themselves. Prefer direct tool evidence from real CLI output, exact JSON payloads, imports, fixture outputs, and explicit invalid-case runs.
+- Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough when the contract requires exact field names, exact keys/schema, state transitions, ordering/reply semantics, roundtrip fidelity, or operation-specific failure behavior.
+- If recent evidence suggests suspicious schema drift (for example alternate key names, list-vs-dict regrouping, wrapper payloads, or cursor_index vs cursor style mismatches), use "needs_work" unless the exact required external shape is directly evidenced.
+- If the item is about invalid behavior, require direct evidence for the specific risky operation named in the item, not only generic malformed JSON / unknown-op checks.
+- The message should tell the coding agent exactly what to verify/fix for this checklist item, including which command/fixture/output to show when possible.
 - No prose outside JSON.`;
 
 /** Built-in fallback system prompt (default, used when no model-specific match). */
@@ -467,90 +483,112 @@ function extractAssistantText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
-function isRuntimeHeuristicKind(value: unknown): value is RuntimeHeuristicKind {
-  return value === "line_limit" || value === "imports" || value === "cli_surface" || value === "invalid_cases" || value === "schema_keys" || value === "breadth" || value === "roundtrip";
-}
-
-function isRuntimeHeuristicPriority(value: unknown): value is RuntimeHeuristicPriority {
-  return value === "high" || value === "medium" || value === "low";
-}
-
-function isRuntimeHeuristicSource(value: unknown): value is RuntimeHeuristicSource {
-  return value === "explicit_outcome" || value === "examples" || value === "inferred";
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function normalizeRuntimeHeuristic(value: unknown, index: number): RuntimeHeuristic | null {
+function normalizeChecklistItem(value: unknown, index: number): CompletionChecklistItem | null {
   if (typeof value !== "object" || value === null) return null;
   const item = value as Record<string, unknown>;
-  if (typeof item.id !== "string" || !isRuntimeHeuristicKind(item.kind) || !isRuntimeHeuristicPriority(item.priority) || typeof item.warning !== "string") {
+  if (typeof item.id !== "string" || typeof item.title !== "string" || typeof item.description !== "string" || typeof item.verificationPrompt !== "string") {
     return null;
   }
 
   return {
-    id: item.id.trim() || `heuristic-${index + 1}`,
-    kind: item.kind,
-    priority: item.priority,
-    warning: item.warning.trim(),
-    appliesWhen: typeof item.appliesWhen === "string" ? item.appliesWhen.trim() : undefined,
-    paths: isStringArray(item.paths) ? item.paths : undefined,
-    operations: isStringArray(item.operations) ? item.operations : undefined,
-    requiredKeys: isStringArray(item.requiredKeys) ? item.requiredKeys : undefined,
-    suspiciousKeys: isStringArray(item.suspiciousKeys) ? item.suspiciousKeys : undefined,
-    lineLimit: typeof item.lineLimit === "number" && Number.isFinite(item.lineLimit) ? item.lineLimit : undefined,
-    derivedFrom: isRuntimeHeuristicSource(item.derivedFrom) ? item.derivedFrom : undefined,
+    id: item.id.trim() || `check-${index + 1}`,
+    title: item.title.trim(),
+    description: item.description.trim(),
+    verificationPrompt: item.verificationPrompt.trim(),
+    status: "pending",
+    attempts: 0,
   };
 }
 
-function parseRuntimeHeuristicsResponse(text: string): RuntimeHeuristic[] {
+function parseChecklistResponse(text: string): CompletionChecklistItem[] {
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) ?? text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
   const jsonStr = jsonMatch?.[1] ?? text.trim();
 
   try {
-    const parsed = JSON.parse(jsonStr) as { heuristics?: unknown } | unknown[];
-    const heuristics = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { heuristics?: unknown })?.heuristics) ? (parsed as { heuristics: unknown[] }).heuristics : [];
-    return heuristics
-      .map((item, index) => normalizeRuntimeHeuristic(item, index))
-      .filter((item): item is RuntimeHeuristic => item !== null)
-      .slice(0, MAX_RUNTIME_HEURISTICS);
+    const parsed = JSON.parse(jsonStr) as { items?: unknown } | unknown[];
+    const items = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { items?: unknown })?.items)
+        ? (parsed as { items: unknown[] }).items
+        : [];
+
+    return items
+      .map((item, index) => normalizeChecklistItem(item, index))
+      .filter((item): item is CompletionChecklistItem => item !== null)
+      .slice(0, MAX_CHECKLIST_ITEMS);
   } catch {
     return [];
   }
 }
 
-export function formatRuntimeHeuristicsForPrompt(heuristics: RuntimeHeuristic[]): string {
-  if (heuristics.length === 0) return "RUNTIME CHECK PLAN:\n(None generated)";
-
-  const lines = heuristics.map((heuristic) => {
-    const extras = [
-      heuristic.operations?.length ? `ops=${heuristic.operations.join(",")}` : "",
-      heuristic.paths?.length ? `paths=${heuristic.paths.join(",")}` : "",
-      heuristic.requiredKeys?.length ? `requiredKeys=${heuristic.requiredKeys.join(",")}` : "",
-      heuristic.suspiciousKeys?.length ? `suspiciousKeys=${heuristic.suspiciousKeys.join(",")}` : "",
-      heuristic.lineLimit !== undefined ? `lineLimit=${heuristic.lineLimit}` : "",
-      heuristic.derivedFrom ? `source=${heuristic.derivedFrom}` : "",
-    ].filter(Boolean).join("; ");
-
-    return `- [${heuristic.priority}] ${heuristic.kind}: ${heuristic.warning}${extras ? ` (${extras})` : ""}`;
-  });
-
-  return `RUNTIME CHECK PLAN:\n${lines.join("\n")}`;
+export function formatChecklistForPrompt(items: CompletionChecklistItem[]): string {
+  if (items.length === 0) return "COMPLETION CHECKLIST:\n(None generated)";
+  return `COMPLETION CHECKLIST:\n${items.map((item) => `- [${item.status}] ${item.title}: ${item.description}`).join("\n")}`;
 }
 
-export async function generateRuntimeHeuristics(
+export async function generateCompletionChecklist(
   ctx: ExtensionContext,
   provider: string,
   modelId: string,
   outcome: string,
   debug?: SupervisorPayloadDebugOptions,
-): Promise<RuntimeHeuristic[]> {
-  const userPrompt = `Desired outcome:\n${outcome}\n\nGenerate a compact runtime check plan for this outcome. Focus on evidence-interpretation helpers such as line limits, exact import surfaces, CLI/entrypoint checks, invalid-case coverage, exact schema keys that are explicit in the outcome/examples, roundtrip requirements, and breadth requirements. Return JSON only.`;
-  const text = await callModel(ctx, provider, modelId, HEURISTIC_BOOTSTRAP_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
+): Promise<CompletionChecklistItem[]> {
+  const userPrompt = `Desired outcome:\n${outcome}\n\nGenerate a short checklist of the highest-risk completion checks that must be verified before this task may be considered done. Focus on the few checks most likely to catch semantic contract failures, not generic smoke checks. Return JSON only.`;
+  const text = await callModel(ctx, provider, modelId, CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
   if (text === null) return [];
-  return parseRuntimeHeuristicsResponse(text);
+  return parseChecklistResponse(text);
+}
+
+export async function reviewChecklistItem(
+  ctx: ExtensionContext,
+  provider: string,
+  modelId: string,
+  outcome: string,
+  item: CompletionChecklistItem,
+  snapshot: ConversationMessage[],
+  evidenceLines: string[],
+  evidenceWarnings: string[],
+  debug?: SupervisorPayloadDebugOptions,
+): Promise<ChecklistReviewDecision> {
+  const conversationText = snapshot.length === 0
+    ? "(No conversation yet)"
+    : snapshot.map((m) => `${m.role === "user" ? "USER" : "ASSISTANT"}: ${m.content}`).join("\n\n---\n\n");
+  const evidenceSection = evidenceLines.length === 0
+    ? "RECENT TOOL EVIDENCE:\n(None captured recently)"
+    : `RECENT TOOL EVIDENCE:\n${evidenceLines.map((line) => `- ${line}`).join("\n")}`;
+  const warningsSection = evidenceWarnings.length === 0
+    ? ""
+    : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
+  const userPrompt = `DESIRED OUTCOME:\n${outcome}\n\nCHECKLIST ITEM:\nTitle: ${item.title}\nDescription: ${item.description}\nVerification guidance: ${item.verificationPrompt}\nAttempts so far: ${item.attempts}\n\nRECENT CONVERSATION:\n${conversationText}\n\n${evidenceSection}${warningsSection}\n\nIs this checklist item clearly satisfied? If not, tell the coding agent exactly what to re-check/fix before finishing.`;
+  const text = await callModel(ctx, provider, modelId, CHECKLIST_REVIEW_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
+  if (text === null) {
+    return {
+      status: "needs_work",
+      message: item.verificationPrompt,
+      reasoning: "Checklist review model call failed",
+      confidence: 0,
+    };
+  }
+
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) ?? text.match(/(\{[\s\S]*\})/);
+  const jsonStr = jsonMatch?.[1] ?? text.trim();
+  try {
+    const parsed = JSON.parse(jsonStr) as Partial<ChecklistReviewDecision>;
+    if (parsed.status !== "passed" && parsed.status !== "needs_work") throw new Error("invalid status");
+    return {
+      status: parsed.status,
+      message: typeof parsed.message === "string" ? parsed.message.trim() : undefined,
+      reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "",
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
+    };
+  } catch {
+    return {
+      status: "needs_work",
+      message: item.verificationPrompt,
+      reasoning: "Checklist review parse failure",
+      confidence: 0,
+    };
+  }
 }
 
 /** Build the user-facing prompt for the supervisor LLM. */
@@ -563,7 +601,7 @@ function buildUserPrompt(
   compactionSummary: string | null,
   evidenceLines: string[],
   evidenceWarnings: string[],
-  runtimeHeuristics: RuntimeHeuristic[],
+  checklistItems: CompletionChecklistItem[],
 ): string {
   const interventionHistory =
     state.interventions.length === 0
@@ -605,7 +643,7 @@ The agent is making diminishing improvements. Apply a lenient standard:
     ? ""
     : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
 
-  const runtimeHeuristicsSection = `\n${formatRuntimeHeuristicsForPrompt(runtimeHeuristics)}`;
+  const checklistSection = `\n${formatChecklistForPrompt(checklistItems)}`;
 
   const midRunDesc = config.checkInterval === 0
     ? "never check mid-run (only at end of each run)"
@@ -628,7 +666,7 @@ ${agentStatus}${stagnationWarning}
 ${summarySection}RECENT CONVERSATION (last ${snapshot.length} messages):
 ${conversationText}
 
-${evidenceSection}${evidenceWarningsSection}${runtimeHeuristicsSection}
+${evidenceSection}${evidenceWarningsSection}${checklistSection}
 
 PREVIOUS INTERVENTIONS BY YOU:
 ${interventionHistory}
@@ -669,7 +707,7 @@ export async function analyze(
     compactionSummary,
     evidenceSummary.lines,
     evidenceSummary.warnings,
-    state.runtimeHeuristics ?? [],
+    state.completionChecklist?.items ?? [],
   );
 
   try {

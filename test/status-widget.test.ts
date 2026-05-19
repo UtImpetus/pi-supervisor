@@ -111,7 +111,9 @@ describe("status-widget", () => {
   });
 
   it("shows bootstrapping action and pending check setup", () => {
-    const state = makeState({ heuristicSetup: { status: "pending", count: 0 } });
+    const state = makeState({
+      completionChecklist: { status: "pending", count: 0, currentIndex: 0, summaryRequested: false, items: [] },
+    });
     const action: WidgetAction = { type: "bootstrapping" };
     const lines = captureRender(state, action);
     expect(lines[1]).toContain("checks: setting up");
@@ -225,16 +227,22 @@ describe("status-widget", () => {
     expect(lines[1]).toContain("w10");
   });
 
-  it("shows heuristic count when runtime checks are ready", () => {
+  it("shows checklist progress when runtime checks are ready", () => {
     const state = makeState({
-      runtimeHeuristics: [
-        { id: "imports", kind: "imports", priority: "high", warning: "Verify imports" },
-        { id: "schema", kind: "schema_keys", priority: "medium", warning: "Verify schema keys" },
-      ],
-      heuristicSetup: { status: "ready", count: 2, source: "bootstrap-llm" },
+      completionChecklist: {
+        status: "ready",
+        count: 2,
+        source: "bootstrap-llm",
+        currentIndex: 1,
+        summaryRequested: false,
+        items: [
+          { id: "imports", title: "Verify imports", description: "Public imports must work", verificationPrompt: "Check imports.", status: "passed", attempts: 1 },
+          { id: "cli", title: "Verify CLI", description: "CLI output must match", verificationPrompt: "Check CLI.", status: "pending", attempts: 0 },
+        ],
+      },
     });
     const lines = captureRender(state);
-    expect(lines[1]).toContain("checks: 2");
+    expect(lines[1]).toContain("checks: 1/2");
   });
 });
 
