@@ -114,10 +114,10 @@ describe("status-widget", () => {
     const state = makeState({
       completionChecklist: { status: "pending", count: 0, currentIndex: 0, summaryRequested: false, items: [] },
     });
-    const action: WidgetAction = { type: "bootstrapping" };
+    const action: WidgetAction = { type: "bootstrapping", frame: "⠙" };
     const lines = captureRender(state, action);
     expect(lines[1]).toContain("checks: setting up");
-    expect(lines[1]).toContain("setting up checks");
+    expect(lines[1]).toContain("⠙ setting up checks");
   });
 
   it("shows analyzing action with turn number", () => {
@@ -161,6 +161,19 @@ describe("status-widget", () => {
     expect(lines[0]).not.toContain("sensitivity");
     expect(lines[1]).toContain("claude-haiku");
     expect(lines[1]).toContain("sensitivity");
+  });
+
+  it("uses the bootstrapping spinner frame in the footer status", () => {
+    const ctx = {
+      cwd: makeTempCwd(),
+      ui: {
+        setStatus: vi.fn(),
+        setWidget: vi.fn(),
+      },
+    } as any;
+
+    updateUI(ctx, makeState(), { type: "bootstrapping", frame: "⠋", summary: "setting up checks…" });
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("supervisor", "⠋");
   });
 
   it("clears widget when state is null", () => {

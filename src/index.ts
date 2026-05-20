@@ -40,6 +40,7 @@ import {
   persistProjectSupervisorPrompt,
 } from "./lesson-learned.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
+import { deriveArtifactSearchTerms, SessionToolArtifactStore } from "./tool-artifacts.js";
 import type { Sensitivity, SensitivityConfig, SteeringDecision } from "./types.js";
 import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
 import { pickModel } from "./ui/model-picker.js";
@@ -72,6 +73,7 @@ const MAX_IDLE_STEERS = 5;
 export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
   const evidence = new SupervisorEvidenceTracker();
+  const toolArtifacts = new SessionToolArtifactStore();
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
   let lastEvidenceNoteContent: string | null = null;
 
@@ -124,6 +126,7 @@ export default function (pi: ExtensionAPI) {
 
   const resetRunEvidence = () => {
     evidence.reset();
+    toolArtifacts.reset();
     lastEvidenceNoteContent = null;
   };
 
@@ -237,6 +240,7 @@ export default function (pi: ExtensionAPI) {
     const activeState = state.getState();
     if (activeState?.active) {
       evidence.hydrateFromSession(ctx, activeState.startedAt);
+      toolArtifacts.hydrate(ctx);
       lastEvidenceNoteContent = findLastEvidenceNoteContent(ctx.sessionManager.getBranch(), activeState.startedAt);
     } else {
       resetRunEvidence();
@@ -252,9 +256,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (!state.isActive()) return;
     evidence.recordToolResult(event);
+    toolArtifacts.recordToolResult(ctx, event);
   });
 
   pi.on("session_compact", async () => {
@@ -287,6 +292,7 @@ export default function (pi: ExtensionAPI) {
         undefined,
         undefined,
         evidence.getRecent(),
+        toolArtifacts.getRecentExcerpts(ctx, 2),
         getDebugOptions(ctx),
       );
     } catch {
@@ -326,6 +332,8 @@ export default function (pi: ExtensionAPI) {
 
     const snapshot = buildSnapshot(ctx, resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig).messageLimit);
     const evidenceSummary = summarizeEvidenceForPrompt(s.outcome, snapshot, evidence.getRecent(), true);
+    const artifactTerms = deriveArtifactSearchTerms(s.outcome, item.title, item.description, item.verificationPrompt, evidenceSummary.warnings.join("\n"));
+    const rawArtifactExcerpts = toolArtifacts.searchExcerpts(ctx, { terms: artifactTerms, maxResults: 4 });
     const review = await reviewChecklistItem(
       ctx,
       s.provider,
@@ -335,6 +343,7 @@ export default function (pi: ExtensionAPI) {
       snapshot,
       evidenceSummary.lines,
       evidenceSummary.warnings,
+      rawArtifactExcerpts,
       getDebugOptions(ctx),
     );
 
@@ -390,6 +399,7 @@ export default function (pi: ExtensionAPI) {
         updateUI(ctx, state.getState()!, { type: "analyzing", turn: s.turnCount, thinking });
       },
       evidence.getRecent(),
+      toolArtifacts.getRecentExcerpts(ctx, 4),
       getDebugOptions(ctx),
     );
 
@@ -637,18 +647,36 @@ export default function (pi: ExtensionAPI) {
     modelId: string,
     outcome: string,
   ): Promise<string> => {
-    updateUI(ctx, state.getState(), { type: "bootstrapping", summary: "setting up checks…" });
+    const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+    let spinnerIndex = 0;
+    const renderBootstrapping = () => {
+      updateUI(ctx, state.getState(), {
+        type: "bootstrapping",
+        frame: spinnerFrames[spinnerIndex],
+        summary: "setting up checks…",
+      });
+    };
 
-    const checklistItems = await generateCompletionChecklist(ctx, provider, modelId, outcome, getDebugOptions(ctx));
-    if (checklistItems.length > 0) {
-      state.setCompletionChecklist(checklistItems);
+    renderBootstrapping();
+    const spinner = setInterval(() => {
+      spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+      renderBootstrapping();
+    }, 100);
+
+    try {
+      const checklistItems = await generateCompletionChecklist(ctx, provider, modelId, outcome, getDebugOptions(ctx));
+      if (checklistItems.length > 0) {
+        state.setCompletionChecklist(checklistItems);
+        updateUI(ctx, state.getState());
+        return getChecklistLabel(state.getState());
+      }
+
+      state.setChecklistSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No checklist generated" });
       updateUI(ctx, state.getState());
       return getChecklistLabel(state.getState());
+    } finally {
+      clearInterval(spinner);
     }
-
-    state.setChecklistSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No checklist generated" });
-    updateUI(ctx, state.getState());
-    return getChecklistLabel(state.getState());
   };
 
   const startSupervisionRun = async (ctx: ExtensionContext, outcome: string) => {

@@ -19,8 +19,9 @@ const WIDGET_ID = "supervisor";
 const STATUS_ID = "supervisor";
 
 const MAX_OUTCOME_DISPLAY = 48;
-const MAX_STEER_DISPLAY   = 50;
+const MAX_STEER_DISPLAY = 50;
 const MAX_THINKING_DISPLAY = 80;
+const SETUP_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 let _widgetVisible = true;
 
@@ -40,7 +41,7 @@ export function isWidgetVisible(): boolean {
 
 export type WidgetAction =
   | { type: "watching" }
-  | { type: "bootstrapping"; summary?: string }
+  | { type: "bootstrapping"; summary?: string; frame?: string }
   | { type: "analyzing"; turn: number; thinking?: string }
   | { type: "steering"; message: string }
   | { type: "done" };
@@ -77,7 +78,10 @@ export function updateUI(
     return;
   }
 
-  ctx.ui.setStatus(STATUS_ID, "🎯");
+  const statusText = action.type === "bootstrapping"
+    ? action.frame ?? SETUP_SPINNER_FRAMES[0]
+    : "🎯";
+  ctx.ui.setStatus(STATUS_ID, statusText);
 
   if (!_widgetVisible) {
     ctx.ui.setWidget(WIDGET_ID, undefined);
@@ -132,9 +136,12 @@ export function updateUI(
       case "watching":
         actionStr = theme.fg("dim", "watching");
         break;
-      case "bootstrapping":
-        actionStr = theme.fg("warning", snapAction.summary ? truncate(snapAction.summary, MAX_STEER_DISPLAY) : "setting up checks…");
+      case "bootstrapping": {
+        const summary = snapAction.summary ? truncate(snapAction.summary, MAX_STEER_DISPLAY) : "setting up checks…";
+        const label = snapAction.frame ? `${snapAction.frame} ${summary}` : summary;
+        actionStr = theme.fg("warning", label);
         break;
+      }
       case "analyzing":
         actionStr = theme.fg("warning", `⟳ turn ${snapAction.turn}`);
         thinking  = snapAction.thinking ?? "";

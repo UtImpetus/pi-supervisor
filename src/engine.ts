@@ -549,6 +549,7 @@ export async function reviewChecklistItem(
   snapshot: ConversationMessage[],
   evidenceLines: string[],
   evidenceWarnings: string[],
+  rawArtifactExcerpts: string[] = [],
   debug?: SupervisorPayloadDebugOptions,
 ): Promise<ChecklistReviewDecision> {
   const conversationText = snapshot.length === 0
@@ -560,7 +561,10 @@ export async function reviewChecklistItem(
   const warningsSection = evidenceWarnings.length === 0
     ? ""
     : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
-  const userPrompt = `DESIRED OUTCOME:\n${outcome}\n\nCHECKLIST ITEM:\nTitle: ${item.title}\nDescription: ${item.description}\nVerification guidance: ${item.verificationPrompt}\nAttempts so far: ${item.attempts}\n\nRECENT CONVERSATION:\n${conversationText}\n\n${evidenceSection}${warningsSection}\n\nIs this checklist item clearly satisfied? If not, tell the coding agent exactly what to re-check/fix before finishing.`;
+  const rawArtifactsSection = rawArtifactExcerpts.length === 0
+    ? ""
+    : `\nRAW TOOL OUTPUT EXCERPTS:\n${rawArtifactExcerpts.map((excerpt, index) => `[${index + 1}] ${excerpt}`).join("\n\n")}`;
+  const userPrompt = `DESIRED OUTCOME:\n${outcome}\n\nCHECKLIST ITEM:\nTitle: ${item.title}\nDescription: ${item.description}\nVerification guidance: ${item.verificationPrompt}\nAttempts so far: ${item.attempts}\n\nRECENT CONVERSATION:\n${conversationText}\n\n${evidenceSection}${warningsSection}${rawArtifactsSection}\n\nIs this checklist item clearly satisfied? If not, tell the coding agent exactly what to re-check/fix before finishing.`;
   const text = await callModel(ctx, provider, modelId, CHECKLIST_REVIEW_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
   if (text === null) {
     return {
@@ -602,6 +606,7 @@ function buildUserPrompt(
   compactionSummary: string | null,
   evidenceLines: string[],
   evidenceWarnings: string[],
+  rawArtifactExcerpts: string[],
   checklistItems: CompletionChecklistItem[],
 ): string {
   const interventionHistory =
@@ -644,6 +649,10 @@ The agent is making diminishing improvements. Apply a lenient standard:
     ? ""
     : `\nCLAIM / EVIDENCE WARNINGS:\n${evidenceWarnings.map((warning) => `- ${warning}`).join("\n")}`;
 
+  const rawArtifactsSection = rawArtifactExcerpts.length === 0
+    ? ""
+    : `\nRAW TOOL OUTPUT EXCERPTS:\n${rawArtifactExcerpts.map((excerpt, index) => `[${index + 1}] ${excerpt}`).join("\n\n")}`;
+
   const checklistSection = `\n${formatChecklistForPrompt(checklistItems)}`;
 
   const midRunDesc = config.checkInterval === 0
@@ -667,7 +676,7 @@ ${agentStatus}${stagnationWarning}
 ${summarySection}RECENT CONVERSATION (last ${snapshot.length} messages):
 ${conversationText}
 
-${evidenceSection}${evidenceWarningsSection}${checklistSection}
+${evidenceSection}${evidenceWarningsSection}${rawArtifactsSection}${checklistSection}
 
 PREVIOUS INTERVENTIONS BY YOU:
 ${interventionHistory}
@@ -690,6 +699,7 @@ export async function analyze(
   signal?: AbortSignal,
   onDelta?: (accumulated: string) => void,
   evidence: SupervisorEvidenceItem[] = [],
+  rawArtifactExcerpts: string[] = [],
   debug?: SupervisorPayloadDebugOptions,
 ): Promise<SteeringDecision> {
   const { prompt: systemPrompt } = loadSystemPrompt(ctx.cwd, state.modelId);
@@ -708,6 +718,7 @@ export async function analyze(
     compactionSummary,
     evidenceSummary.lines,
     evidenceSummary.warnings,
+    rawArtifactExcerpts,
     state.completionChecklist?.items ?? [],
   );
 
