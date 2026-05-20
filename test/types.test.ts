@@ -6,7 +6,12 @@ import {
 } from "../src/types.js";
 
 describe("SENSITIVITY_PRESETS", () => {
-  it("has low, medium, high entries with correct fields", () => {
+  it("has ultralight, low, medium, high entries with correct fields", () => {
+    expect(SENSITIVITY_PRESETS.ultralight).toEqual({
+      checkInterval: 0,
+      confidenceThreshold: 1.0,
+      messageLimit: 4,
+    });
     expect(SENSITIVITY_PRESETS.low).toEqual({
       checkInterval: 0,
       confidenceThreshold: 1.0,
@@ -26,6 +31,11 @@ describe("SENSITIVITY_PRESETS", () => {
 });
 
 describe("resolveSensitivityConfig", () => {
+  it("returns the preset config for ultralight", () => {
+    const config = resolveSensitivityConfig("ultralight");
+    expect(config).toEqual(SENSITIVITY_PRESETS.ultralight);
+  });
+
   it("returns the preset config for low", () => {
     const config = resolveSensitivityConfig("low");
     expect(config).toEqual(SENSITIVITY_PRESETS.low);
@@ -54,6 +64,10 @@ describe("resolveSensitivityConfig", () => {
 });
 
 describe("detectSensitivityPreset", () => {
+  it("detects ultralight preset", () => {
+    expect(detectSensitivityPreset(SENSITIVITY_PRESETS.ultralight)).toBe("ultralight");
+  });
+
   it("detects low preset", () => {
     expect(detectSensitivityPreset(SENSITIVITY_PRESETS.low)).toBe("low");
   });

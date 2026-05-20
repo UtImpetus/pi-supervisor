@@ -28,6 +28,7 @@ describe("SupervisorStateManager", () => {
       provider: "anthropic",
       modelId: "claude-haiku-4-5",
       sensitivity: "high",
+      checklistEnabled: true,
       interventions: [],
       turnCount: 0,
       completionChecklist: {
@@ -43,6 +44,7 @@ describe("SupervisorStateManager", () => {
       provider: "anthropic",
       modelId: "claude-haiku-4-5",
       sensitivity: "high",
+      checklistEnabled: true,
     });
 
     expect(pi.appendEntry).toHaveBeenCalledTimes(2);
@@ -71,6 +73,7 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getPreferences()).toMatchObject({
       sensitivity: "custom",
       sensitivityConfig: customConfig,
+      checklistEnabled: true,
     });
   });
 
@@ -160,6 +163,8 @@ describe("SupervisorStateManager", () => {
       provider: "openai",
       modelId: "gpt-5",
       sensitivity: "high",
+      sensitivityConfig: undefined,
+      checklistEnabled: true,
     });
     expect(pi.appendEntry).toHaveBeenCalledTimes(4);
     expect(pi.appendEntry).toHaveBeenNthCalledWith(1, "supervisor-preferences", expect.objectContaining({
@@ -198,15 +203,15 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getPreferences().sensitivityConfig).toEqual(customConfig);
   });
 
-  it("setPreferences stores additional defaults like widget visibility and debug flags", () => {
+  it("setPreferences stores additional defaults like widget visibility, checklist, and debug flags", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);
 
-    mgr.setPreferences({ widgetVisible: false, debugPayloads: true });
+    mgr.setPreferences({ checklistEnabled: false, widgetVisible: false, debugPayloads: true });
 
-    expect(mgr.getPreferences()).toEqual({ widgetVisible: false, debugPayloads: true });
+    expect(mgr.getPreferences()).toEqual({ checklistEnabled: false, widgetVisible: false, debugPayloads: true });
     expect(pi.appendEntry).toHaveBeenCalledTimes(1);
-    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { widgetVisible: false, debugPayloads: true });
+    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", { checklistEnabled: false, widgetVisible: false, debugPayloads: true });
   });
 
   it("stores completion checklist and marks setup ready", () => {
@@ -312,7 +317,7 @@ describe("SupervisorStateManager", () => {
   });
 
   it("loadFromSession resets missing state and preferences independently", () => {
-    const prefsOnly: SupervisorPreferences = { sensitivity: "medium", widgetVisible: false };
+    const prefsOnly: SupervisorPreferences = { sensitivity: "medium", checklistEnabled: false, widgetVisible: false };
     const ctx = makeCtxWithBranch([
       { type: "message", message: { role: "user", content: "hi" } },
       { type: "custom", customType: "supervisor-preferences", data: prefsOnly },
@@ -335,6 +340,7 @@ describe("SupervisorStateManager", () => {
     const customPrefs: SupervisorPreferences = {
       sensitivity: "custom",
       sensitivityConfig: customConfig,
+      checklistEnabled: false,
     };
 
     const ctx = makeCtxWithBranch([
@@ -348,5 +354,29 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getState()?.sensitivity).toBe("custom");
     expect(mgr.getState()?.sensitivityConfig).toEqual(customConfig);
     expect(mgr.getPreferences().sensitivityConfig).toEqual(customConfig);
+  });
+
+  it("can disable the checklist for active and future supervision", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.start("goal", "anthropic", "model", "ultralight", undefined, false);
+    expect(mgr.getState()?.checklistEnabled).toBe(false);
+    expect(mgr.getState()?.completionChecklist).toBeUndefined();
+    expect(mgr.getPreferences().checklistEnabled).toBe(false);
+
+    pi.appendEntry.mockClear();
+    mgr.setChecklistEnabled(true);
+
+    expect(mgr.getState()?.checklistEnabled).toBe(true);
+    expect(mgr.getState()?.completionChecklist).toEqual({
+      status: "pending",
+      count: 0,
+      currentIndex: 0,
+      summaryRequested: false,
+      items: [],
+    });
+    expect(mgr.getPreferences().checklistEnabled).toBe(true);
+    expect(pi.appendEntry).toHaveBeenCalledTimes(2);
   });
 });

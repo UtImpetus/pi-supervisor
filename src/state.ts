@@ -29,7 +29,14 @@ export class SupervisorStateManager {
     this.pi = pi;
   }
 
-  start(outcome: string, provider: string, modelId: string, sensitivity: Sensitivity, sensitivityConfig?: SensitivityConfig): void {
+  start(
+    outcome: string,
+    provider: string,
+    modelId: string,
+    sensitivity: Sensitivity,
+    sensitivityConfig?: SensitivityConfig,
+    checklistEnabled = true,
+  ): void {
     this.state = {
       active: true,
       outcome,
@@ -37,16 +44,19 @@ export class SupervisorStateManager {
       modelId,
       sensitivity,
       sensitivityConfig,
+      checklistEnabled,
       interventions: [],
       startedAt: Date.now(),
       turnCount: 0,
-      completionChecklist: {
-        status: "pending",
-        count: 0,
-        currentIndex: 0,
-        summaryRequested: false,
-        items: [],
-      },
+      completionChecklist: checklistEnabled
+        ? {
+            status: "pending",
+            count: 0,
+            currentIndex: 0,
+            summaryRequested: false,
+            items: [],
+          }
+        : undefined,
     };
     this.preferences = {
       ...this.preferences,
@@ -54,6 +64,7 @@ export class SupervisorStateManager {
       modelId,
       sensitivity,
       sensitivityConfig,
+      checklistEnabled,
     };
     this.persistPreferences();
     this.persistState();
@@ -174,6 +185,27 @@ export class SupervisorStateManager {
     if (!this.state) return;
     this.state.sensitivity = sensitivity;
     this.state.sensitivityConfig = sensitivityConfig;
+    this.persistState();
+  }
+
+  setChecklistEnabled(enabled: boolean): void {
+    this.preferences = {
+      ...this.preferences,
+      checklistEnabled: enabled,
+    };
+    this.persistPreferences();
+
+    if (!this.state) return;
+    this.state.checklistEnabled = enabled;
+    this.state.completionChecklist = enabled
+      ? this.state.completionChecklist ?? {
+          status: "pending",
+          count: 0,
+          currentIndex: 0,
+          summaryRequested: false,
+          items: [],
+        }
+      : undefined;
     this.persistState();
   }
 

@@ -603,6 +603,7 @@ function buildUserPrompt(
   snapshot: ConversationMessage[],
   agentIsIdle: boolean,
   stagnating: boolean,
+  lenientCompletionMode: boolean,
   compactionSummary: string | null,
   evidenceLines: string[],
   evidenceWarnings: string[],
@@ -629,13 +630,17 @@ function buildUserPrompt(
 You MUST return "done" or "steer". Returning "continue" here means the agent stays idle forever.`
     : `AGENT STATUS: WORKING — the agent is actively processing. Only intervene if clearly off track.`;
 
-  const stagnationWarning = stagnating
+  const completionWarning = stagnating
     ? `\n⚠ STAGNATION: The supervisor has sent ${state.interventions.length} steering messages with no "done" verdict.
 The agent is making diminishing improvements. Apply a lenient standard:
 - If the core goal is substantially achieved (≥80%), return "done".
 - Only return "steer" if a CRITICAL piece is still missing — not minor polish.
 - Prefer stopping over looping forever on perfection.`
-    : "";
+    : lenientCompletionMode
+      ? `\n⚠ LENIENT COMPLETION MODE: Sensitivity is ultralight.
+Because the agent is idle, prefer "done" unless a major required piece is still missing.
+Do NOT steer for minor polish, optional extras, or speculative follow-up verification.`
+      : "";
 
   const summarySection = compactionSummary
     ? `CONVERSATION SUMMARY (earlier history, before recent messages):\n${compactionSummary}\n\n`
@@ -669,9 +674,9 @@ The agent is making diminishing improvements. Apply a lenient standard:
 ${state.outcome}
 
 SENSITIVITY: ${sensitivityDesc}
-(low = check only at end of each run, steer if seriously off track; medium = also check every 3rd tool cycle mid-run, steer on clear drift; high = check every tool cycle, steer proactively)
+(ultralight = check only at end of each run and prefer done unless major work is missing; low = check only at end of each run, steer if seriously off track; medium = also check every 3rd tool cycle mid-run, steer on clear drift; high = check every tool cycle, steer proactively)
 
-${agentStatus}${stagnationWarning}
+${agentStatus}${completionWarning}
 
 ${summarySection}RECENT CONVERSATION (last ${snapshot.length} messages):
 ${conversationText}
@@ -696,6 +701,7 @@ export async function analyze(
   state: SupervisorState,
   agentIsIdle: boolean,
   stagnating: boolean,
+  lenientCompletionMode = false,
   signal?: AbortSignal,
   onDelta?: (accumulated: string) => void,
   evidence: SupervisorEvidenceItem[] = [],
@@ -715,6 +721,7 @@ export async function analyze(
     snapshot,
     agentIsIdle,
     stagnating,
+    lenientCompletionMode,
     compactionSummary,
     evidenceSummary.lines,
     evidenceSummary.warnings,

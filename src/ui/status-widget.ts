@@ -95,6 +95,7 @@ export function updateUI(
     promptLabel: describePromptSource(promptSource, state.modelId),
     sensitivity: state.sensitivity,
     sensitivityConfig: resolveSensitivityConfig(state.sensitivity, state.sensitivityConfig),
+    checklistEnabled: state.checklistEnabled !== false,
     interventions: [...state.interventions],
     completionChecklist: state.completionChecklist,
   };
@@ -121,13 +122,15 @@ export function updateUI(
     const steers = steerCount > 0 ? theme.fg("dim", `↗ ${steerCount}`) : "";
     const checklist = snap.completionChecklist;
     const passedChecks = checklist?.items.filter((item) => item.status === "passed").length ?? 0;
-    const checks = checklist?.status === "pending"
-      ? theme.fg("dim", "checks: setting up")
-      : checklist?.status === "failed"
-        ? theme.fg("dim", "checks: fallback")
-        : checklist?.status === "ready"
-          ? theme.fg("dim", `checks: ${passedChecks}/${checklist.count}`)
-          : "";
+    const checks = !snap.checklistEnabled
+      ? theme.fg("dim", "checks: off")
+      : checklist?.status === "pending"
+        ? theme.fg("dim", "checks: setting up")
+        : checklist?.status === "failed"
+          ? theme.fg("dim", "checks: fallback")
+          : checklist?.status === "ready"
+            ? theme.fg("dim", `checks: ${passedChecks}/${checklist.count}`)
+            : "";
 
     // Current action
     let actionStr: string;

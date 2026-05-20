@@ -257,6 +257,12 @@ describe("status-widget", () => {
     const lines = captureRender(state);
     expect(lines[1]).toContain("checks: 1/2");
   });
+
+  it("shows when the checklist is disabled", () => {
+    const state = makeState({ checklistEnabled: false, completionChecklist: undefined });
+    const lines = captureRender(state);
+    expect(lines[1]).toContain("checks: off");
+  });
 });
 
 describe("describePromptSource", () => {

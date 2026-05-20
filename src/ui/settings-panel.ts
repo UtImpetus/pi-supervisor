@@ -16,9 +16,10 @@ import { type SettingItem, SettingsList, type SettingsListTheme } from "@marioze
 import type { Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
 import { detectSensitivityPreset, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
 
-const SENSITIVITIES: Sensitivity[] = ["low", "medium", "high", "custom"];
+const SENSITIVITIES: Sensitivity[] = ["ultralight", "low", "medium", "high", "custom"];
 
 const SENSITIVITY_DESCRIPTIONS: Record<Sensitivity, string> = {
+  ultralight: "Very hands-off: end-of-run only, prefer done unless major work is missing",
   low: "Steer only when seriously off track (end of run only)",
   medium: "Steer on clear drift (end of run + every 3rd mid-run)",
   high: "Proactive steering (end of run + every mid-run)",
@@ -41,6 +42,7 @@ export interface SettingsDefaults {
   modelId: string;
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
+  checklistEnabled: boolean;
   widgetVisible: boolean;
   debugPayloads?: boolean;
 }
@@ -49,6 +51,7 @@ export interface SettingsResult {
   model?: { provider: string; modelId: string };
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
+  checklistEnabled?: boolean;
   widget?: boolean;
   debugPayloads?: boolean;
   action?: "stop";
@@ -58,6 +61,7 @@ export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
   return (
     draft.model !== undefined ||
     draft.sensitivity !== undefined ||
+    draft.checklistEnabled !== undefined ||
     draft.widget !== undefined ||
     draft.debugPayloads !== undefined
   );
@@ -76,6 +80,7 @@ export async function openSettings(
   const currentModelId = state?.modelId ?? defaults.modelId;
   const currentSensitivity = state?.sensitivity ?? defaults.sensitivity;
   const currentConfig = resolveSensitivityConfig(currentSensitivity, state?.sensitivityConfig ?? defaults.sensitivityConfig);
+  const currentChecklistEnabled = state?.checklistEnabled ?? defaults.checklistEnabled;
   const currentWidgetVisible = defaults.widgetVisible;
   const currentDebugPayloads = defaults.debugPayloads ?? false;
   const isActive = state?.active === true;
@@ -165,6 +170,13 @@ export async function openSettings(
         description: "Number of recent messages included in supervisor context",
         currentValue: String(effectiveConfig().messageLimit),
         values: MESSAGE_LIMIT_VALUES,
+      },
+      {
+        id: "checklistEnabled",
+        label: "Completion Checklist",
+        description: "Require the supervisor's completion checklist before finishing",
+        currentValue: currentChecklistEnabled ? "enabled" : "disabled",
+        values: ["enabled", "disabled"],
       },
       {
         id: "widget",
@@ -293,6 +305,8 @@ export async function openSettings(
           settingsList.updateValue("sensitivity", draftSensitivity);
           settingsList.updateValue("messageLimit", newValue);
           settingsList.invalidate();
+        } else if (id === "checklistEnabled") {
+          draft.checklistEnabled = newValue === "enabled";
         } else if (id === "widget") {
           draft.widget = newValue === "visible";
         } else if (id === "debugPayloads") {

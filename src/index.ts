@@ -88,6 +88,9 @@ export default function (pi: ExtensionAPI) {
     const sensitivityConfig: SensitivityConfig | undefined = s?.active
       ? s.sensitivityConfig
       : preferences.sensitivityConfig ?? workspaceConfig?.sensitivityConfig ?? undefined;
+    const checklistEnabled = s?.active
+      ? s.checklistEnabled !== false
+      : preferences.checklistEnabled ?? workspaceConfig?.checklistEnabled ?? true;
 
     return {
       provider: s?.active
@@ -98,6 +101,7 @@ export default function (pi: ExtensionAPI) {
         : preferences.modelId ?? workspaceConfig?.modelId ?? sessionModel?.id ?? DEFAULT_MODEL_ID,
       sensitivity,
       sensitivityConfig: resolveSensitivityConfig(sensitivity, sensitivityConfig),
+      checklistEnabled,
       widgetVisible: preferences.widgetVisible ?? workspaceConfig?.widgetVisible ?? true,
       debugPayloads: preferences.debugPayloads ?? workspaceConfig?.debugPayloads ?? false,
     };
@@ -158,7 +162,7 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  const applySettingsResult = (ctx: ExtensionContext, result: SettingsResult | null) => {
+  const applySettingsResult = async (ctx: ExtensionContext, result: SettingsResult | null) => {
     if (!result) return;
 
     if (result.model) {
@@ -179,6 +183,22 @@ export default function (pi: ExtensionAPI) {
       const saved = saveWorkspaceConfig(ctx.cwd, configPatch);
       ctx.ui.notify(
         `Supervisor sensitivity set to "${result.sensitivity}"${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+          (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+    }
+
+    if (result.checklistEnabled !== undefined) {
+      state.setChecklistEnabled(result.checklistEnabled);
+      const saved = saveWorkspaceConfig(ctx.cwd, { checklistEnabled: result.checklistEnabled });
+      if (result.checklistEnabled && state.isActive()) {
+        const activeState = state.getState();
+        if (activeState) {
+          await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome);
+        }
+      }
+      ctx.ui.notify(
+        `Supervisor completion checklist ${result.checklistEnabled ? "enabled" : "disabled"}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
           (saved ? " · saved to .pi/" : ""),
         "info"
       );
@@ -266,12 +286,12 @@ export default function (pi: ExtensionAPI) {
     persistEvidenceSnapshot();
   });
 
-  // ---- Mid-turn steering: medium, high, and custom sensitivity ----
+  // ---- Mid-turn steering: ultralight, low, medium, high, and custom sensitivity ----
   // turn_end fires after each LLM sub-turn (tool-call cycle) while the agent is still running.
-  // low:    no mid-run checks at all
-  // medium: check every 3rd tool cycle (turns 2, 5, 8, …), confidence >= 0.9
-  // high:   check every tool cycle from turn 2, confidence >= 0.85
-  // custom: uses checkInterval and confidenceThreshold from config
+  // ultralight/low: no mid-run checks at all
+  // medium:         check every 3rd tool cycle (turns 2, 5, 8, …), confidence >= 0.9
+  // high:           check every tool cycle from turn 2, confidence >= 0.85
+  // custom:         uses checkInterval and confidenceThreshold from config
 
   pi.on("turn_end", async (event, ctx) => {
     if (!state.isActive()) return;
@@ -289,6 +309,7 @@ export default function (pi: ExtensionAPI) {
         s,
         false /* agent still working */,
         false /* can't stagnate mid-turn */,
+        false /* no lenient completion mode mid-turn */,
         undefined,
         undefined,
         evidence.getRecent(),
@@ -314,6 +335,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   const runChecklistGate = async (ctx: ExtensionContext, s: NonNullable<ReturnType<typeof state.getState>>): Promise<"steer" | "summary" | "complete" | "skip"> => {
+    if (s.checklistEnabled === false) return "skip";
+
     const checklist = state.getState()?.completionChecklist;
     if (!checklist || checklist.status !== "ready") return "skip";
 
@@ -383,8 +406,10 @@ export default function (pi: ExtensionAPI) {
     const s = state.getState()!;
     const resolvedSensitivity = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
 
-    // Stagnation: too many steers with no "done" → final lenient evaluation
+    // Stagnation: too many steers with no "done" → final lenient evaluation.
+    // Ultralight always uses a more lenient end-of-run standard than low.
     const stagnating = idleSteers >= MAX_IDLE_STEERS;
+    const lenientCompletionMode = stagnating || s.sensitivity === "ultralight";
 
     updateUI(ctx, s, { type: "analyzing", turn: s.turnCount });
 
@@ -393,6 +418,7 @@ export default function (pi: ExtensionAPI) {
       s,
       true /* always idle at agent_end */,
       stagnating,
+      lenientCompletionMode,
       undefined,
       (accumulated) => {
         const thinking = extractThinking(accumulated);
@@ -439,7 +465,7 @@ export default function (pi: ExtensionAPI) {
   const openSupervisorSettingsPanel = async (ctx: ExtensionContext) => {
     const s = state.getState();
     const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
-    applySettingsResult(ctx, result);
+    await applySettingsResult(ctx, result);
   };
 
   const runWidgetCommand = (ctx: ExtensionContext) => {
@@ -531,8 +557,8 @@ export default function (pi: ExtensionAPI) {
 
   const runSensitivityCommand = (ctx: ExtensionContext, rawLevel: string) => {
     const level = rawLevel.trim() as Sensitivity;
-    if (level !== "low" && level !== "medium" && level !== "high" && level !== "custom") {
-      ctx.ui.notify("Usage: /supervise:sensitivity <low|medium|high|custom>", "warning");
+    if (level !== "ultralight" && level !== "low" && level !== "medium" && level !== "high" && level !== "custom") {
+      ctx.ui.notify("Usage: /supervise:sensitivity <ultralight|low|medium|high|custom>", "warning");
       return;
     }
     state.setSensitivity(level, level === "custom" ? SENSITIVITY_PRESETS.medium : undefined);
@@ -606,6 +632,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const getChecklistLabel = (supervisorState: ReturnType<typeof state.getState>): string => {
+    if (supervisorState?.checklistEnabled === false) return " | checks: off";
     const checklist = supervisorState?.completionChecklist;
     if (!checklist) return "";
     if (checklist.status === "failed") return " | checks: fallback";
@@ -647,6 +674,11 @@ export default function (pi: ExtensionAPI) {
     modelId: string,
     outcome: string,
   ): Promise<string> => {
+    if (state.getState()?.checklistEnabled === false) {
+      updateUI(ctx, state.getState());
+      return getChecklistLabel(state.getState());
+    }
+
     const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
     let spinnerIndex = 0;
     const renderBootstrapping = () => {
@@ -700,7 +732,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const sensitivityConfig = resolveSensitivityConfig(sensitivity, defaults.sensitivityConfig);
-    state.start(outcome, provider, modelId, sensitivity, sensitivityConfig);
+    state.start(outcome, provider, modelId, sensitivity, sensitivityConfig, defaults.checklistEnabled);
     idleSteers = 0;
     resetRunEvidence();
     labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
@@ -821,15 +853,16 @@ export default function (pi: ExtensionAPI) {
           "(e.g. 'Implement JWT auth with refresh tokens and full test coverage').",
       }),
       sensitivity: Type.Optional(Type.Union([
+        Type.Literal("ultralight"),
         Type.Literal("low"),
         Type.Literal("medium"),
         Type.Literal("high"),
         Type.Literal("custom"),
       ], {
         description:
-          "How aggressively to steer. low = only when seriously off track, " +
-          "medium = on mild drift (default), high = proactively + mid-turn checks, " +
-          "custom = manually tuned check interval/threshold/window.",
+          "How aggressively to steer. ultralight = prefer done unless major work is missing, " +
+          "low = only when seriously off track, medium = on mild drift (default), " +
+          "high = proactively + mid-turn checks, custom = manually tuned check interval/threshold/window.",
       })),
       sensitivityConfig: Type.Optional(Type.Object({
         checkInterval: Type.Number({ description: "Turns between mid-run checks (0 = off)" }),
@@ -837,6 +870,10 @@ export default function (pi: ExtensionAPI) {
         messageLimit: Type.Number({ description: "Recent messages for supervisor context" }),
       }, {
         description: "Custom sensitivity parameters (only used when sensitivity=custom)",
+      })),
+      checklistEnabled: Type.Optional(Type.Boolean({
+        description:
+          "Whether to require the supervisor's completion checklist before finishing. Defaults to the saved setting (enabled by default).",
       })),
       model: Type.Optional(Type.String({
         description:
@@ -858,10 +895,12 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Resolve sensitivity
+      const defaults = resolveSettingsDefaults(ctx);
       const sensitivity: Sensitivity = params.sensitivity ?? DEFAULT_SENSITIVITY;
       const resolvedConfig = params.sensitivityConfig
         ? { ...params.sensitivityConfig }
         : resolveSensitivityConfig(sensitivity);
+      const checklistEnabled = params.checklistEnabled ?? defaults.checklistEnabled;
 
       // Resolve model: tool param → saved preferences/workspace config → active session model → built-in default
       let provider: string;
@@ -871,12 +910,11 @@ export default function (pi: ExtensionAPI) {
         provider = slash === -1 ? DEFAULT_PROVIDER : params.model.slice(0, slash);
         modelId  = slash === -1 ? params.model     : params.model.slice(slash + 1);
       } else {
-        const defaults = resolveSettingsDefaults(ctx);
         provider = defaults.provider;
         modelId = defaults.modelId;
       }
 
-      state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig);
+      state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig, checklistEnabled);
       idleSteers = 0;
       resetRunEvidence();
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));

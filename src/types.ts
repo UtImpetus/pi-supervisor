@@ -3,7 +3,7 @@
  */
 
 /** Sensitivity presets and custom. */
-export type Sensitivity = "low" | "medium" | "high" | "custom";
+export type Sensitivity = "ultralight" | "low" | "medium" | "high" | "custom";
 
 /** Tunable parameters that the sensitivity presets map to. */
 export interface SensitivityConfig {
@@ -53,6 +53,11 @@ export interface SupervisorIntervention {
 
 /** Named presets mapping sensitivity labels to their config values. */
 export const SENSITIVITY_PRESETS: Record<Exclude<Sensitivity, "custom">, SensitivityConfig> = {
+  ultralight: {
+    checkInterval: 0,
+    confidenceThreshold: 1.0,
+    messageLimit: 4,
+  },
   low: {
     checkInterval: 0,
     confidenceThreshold: 1.0,
@@ -110,6 +115,7 @@ export interface SupervisorState {
   modelId: string;           // e.g. "claude-haiku-4-5-20251001"
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;  // present when "custom"
+  checklistEnabled?: boolean;
   interventions: SupervisorIntervention[];
   startedAt: number;
   turnCount: number;
@@ -122,6 +128,7 @@ export interface SupervisorPreferences {
   modelId?: string;
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
+  checklistEnabled?: boolean;
   widgetVisible?: boolean;
   debugPayloads?: boolean;
 }

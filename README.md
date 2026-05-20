@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/f3b23662-6473-4ac3-82f7-c7f9b64fa7c7
 Then start the conversation normally — the supervisor watches from outside without modifying the agent's context.
 
 1. **After each run** — a separate supervisor LLM analyzes the conversation against the goal (all sensitivities)
-2. **Mid-run, between tool calls** — also checks for drift on `medium` and `high` sensitivity and can steer the agent without waiting for it to finish
+2. **Mid-run, between tool calls** — also checks for drift on `medium`, `high`, and matching `custom` sensitivity and can steer the agent without waiting for it to finish
 3. **On completion** — supervisor signals done and stops automatically
 
 The supervisor is a pure outside observer. It runs in a separate in-memory pi session sharing only the API credentials and never touches the main agent's context window or system prompt.
@@ -48,7 +48,7 @@ pi -e ~/projects/pi-supervisor/src/index.ts
 | `/supervise:stop` | Stop active supervision |
 | `/supervise:widget` | Toggle the status widget on/off |
 | `/supervise:model [provider/modelId]` | Open the interactive model picker or set supervisor model directly |
-| `/supervise:sensitivity <low\|medium\|high\|custom>` | Adjust steering aggressiveness |
+| `/supervise:sensitivity <ultralight\|low\|medium\|high\|custom>` | Adjust steering aggressiveness |
 | `/supervise:debug [status\|on\|off\|toggle]` | Show or change supervisor payload debug logging |
 | `/supervise:lesson-learned [optional guidance]` | Derive project-specific supervisor lessons from the current branch session and preview a `.pi/SUPERVISOR.md` proposal |
 
@@ -81,12 +81,13 @@ The agent can also initiate supervision itself by calling the `start_supervision
 Run `/supervise` (no args) or `/supervise:settings` to open the interactive settings panel:
 
 - **Model** — shows current model; press Enter to browse all available models
-- **Sensitivity** — cycle through `low`/`medium`/`high`/`custom` with Enter or Space
+- **Sensitivity** — cycle through `ultralight`/`low`/`medium`/`high`/`custom` with Enter or Space
   - When `custom` is selected, three sub-parameters appear:
     - **Check Interval** — turns between mid-run checks (0 = off)
     - **Confidence Threshold** — minimum confidence to steer mid-run
     - **Message Window** — recent messages for supervisor context
   - Changing any sub-parameter auto-switches to `custom`; matching a preset snaps back to its name
+- **Completion Checklist** — enable/disable the mandatory completion checklist gate (enabled by default)
 - **Widget** — toggle visibility
 - **Outcome** (when active) — shows goal, steer count, and turn count
 - **Stop** (when active) — stop supervision directly from the panel
@@ -97,7 +98,7 @@ Navigate with arrow keys.
 - **Cancel** — discard pending changes and close
 - **Escape** — discard pending changes and close
 
-Model, sensitivity (including custom config), widget visibility, and payload-debug preference are remembered for the session. If the project already has a `.pi/` directory, they are also saved to `.pi/supervisor-config.json`.
+Model, sensitivity (including custom config), checklist preference, widget visibility, and payload-debug preference are remembered for the session. If the project already has a `.pi/` directory, they are also saved to `.pi/supervisor-config.json`.
 
 ### Live Widget
 
@@ -125,6 +126,7 @@ While analyzing, the second line can also include a truncated `thinking: ...` sn
 
 | Level | When it checks | Confidence threshold | Steering style |
 |---|---|---|---|
+| `ultralight` | End of each run only | 1.0 | Most hands-off; prefer done unless major work is missing |
 | `low` | End of each run only | 1.0 (only if seriously off track) | Minimal intervention |
 | `medium` (default) | End of run + every 3rd tool cycle mid-run | ≥ 0.90 | On clear drift |
 | `high` | End of run + every tool cycle mid-run | ≥ 0.85 | Proactively |
@@ -144,6 +146,10 @@ Adjusting any sub-parameter automatically switches the sensitivity label to **cu
 
 Custom settings are also available via the `/supervise:sensitivity custom` command and the `start_supervision` tool.
 
+### Completion Checklist
+
+By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can now disable that gate from the settings panel (or via saved config) when you want a lighter workflow.
+
 **End-of-run** (`agent_end`): fires once per user prompt after the agent finishes and goes idle. The supervisor must decide `done`, `steer`, or `continue`.
 
 **Mid-run** (`turn_end`): fires after each LLM tool-call cycle while the agent is still working. Steering is injected immediately (interrupting the current run) only when confidence exceeds the threshold. The agent has at least 2 sub-turns to settle before mid-run checks begin.
@@ -158,7 +164,7 @@ The supervisor runs on a **separate model** — it can be a cheaper/faster model
 3. Active chat model (`ctx.model`) — so it works out of the box with no configuration
 4. Built-in default: `anthropic/claude-haiku-4-5-20251001`
 
-Change at any time with `/supervise:model` (interactive picker), `/supervise:model <provider/id>` (direct), or the settings panel. Model, sensitivity (including custom config), widget visibility, and payload-debug preference are saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
+Change at any time with `/supervise:model` (interactive picker), `/supervise:model <provider/id>` (direct), or the settings panel. Model, sensitivity (including custom config), checklist preference, widget visibility, and payload-debug preference are saved to `.pi/supervisor-config.json` if the `.pi/` directory exists.
 
 ## Focus and Goal Discipline
 

@@ -11,6 +11,11 @@ describe("hasSettingsDraftChanges", () => {
     expect(hasSettingsDraftChanges({ debugPayloads: false })).toBe(true);
   });
 
+  it("treats checklistEnabled as a real draft change", () => {
+    expect(hasSettingsDraftChanges({ checklistEnabled: true })).toBe(true);
+    expect(hasSettingsDraftChanges({ checklistEnabled: false })).toBe(true);
+  });
+
   it("still detects existing draft fields", () => {
     expect(hasSettingsDraftChanges({ widget: true })).toBe(true);
     expect(hasSettingsDraftChanges({ sensitivity: "high" })).toBe(true);

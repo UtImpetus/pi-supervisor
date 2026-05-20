@@ -20,12 +20,13 @@ export interface WorkspaceSupervisorConfig {
   modelId?: string;
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
+  checklistEnabled?: boolean;
   widgetVisible?: boolean;
   debugPayloads?: boolean;
 }
 
 function isSensitivity(value: unknown): value is Sensitivity {
-  return value === "low" || value === "medium" || value === "high" || value === "custom";
+  return value === "ultralight" || value === "low" || value === "medium" || value === "high" || value === "custom";
 }
 
 function isSensitivityConfig(value: unknown): value is SensitivityConfig {
@@ -57,6 +58,10 @@ export function loadWorkspaceConfig(cwd: string): WorkspaceSupervisorConfig | nu
 
     if (isSensitivityConfig(parsed.sensitivityConfig)) {
       config.sensitivityConfig = parsed.sensitivityConfig;
+    }
+
+    if (typeof parsed.checklistEnabled === "boolean") {
+      config.checklistEnabled = parsed.checklistEnabled;
     }
 
     if (typeof parsed.widgetVisible === "boolean") {
@@ -108,6 +113,10 @@ export function saveWorkspaceConfig(cwd: string, patch: WorkspaceSupervisorConfi
       delete merged.sensitivityConfig;
     } else if (!isSensitivityConfig(merged.sensitivityConfig)) {
       delete merged.sensitivityConfig;
+    }
+
+    if (typeof merged.checklistEnabled !== "boolean") {
+      delete merged.checklistEnabled;
     }
 
     if (typeof merged.widgetVisible !== "boolean") {
