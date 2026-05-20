@@ -896,7 +896,7 @@ export default function (pi: ExtensionAPI) {
 
       // Resolve sensitivity
       const defaults = resolveSettingsDefaults(ctx);
-      const sensitivity: Sensitivity = params.sensitivity ?? DEFAULT_SENSITIVITY;
+      const sensitivity: Sensitivity = params.sensitivity ?? defaults.sensitivity;
       const resolvedConfig = params.sensitivityConfig
         ? { ...params.sensitivityConfig }
         : resolveSensitivityConfig(sensitivity);
