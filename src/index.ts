@@ -76,6 +76,7 @@ export default function (pi: ExtensionAPI) {
   const toolArtifacts = new SessionToolArtifactStore();
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
   let lastEvidenceNoteContent: string | null = null;
+  let uiAvailable = false;
 
   const resolveSettingsDefaults = (ctx: ExtensionContext) => {
     const s = state.getState();
@@ -283,6 +284,7 @@ export default function (pi: ExtensionAPI) {
   // ---- Session lifecycle: restore state ----
 
   const onSessionLoad = (ctx: ExtensionContext) => {
+    uiAvailable = ctx.hasUI;
     state.loadFromSession(ctx);
     idleSteers = 0;
 
@@ -296,7 +298,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     setWidgetVisible(resolveSettingsDefaults(ctx).widgetVisible);
-    updateUI(ctx, state.getState());
+    if (uiAvailable) updateUI(ctx, state.getState());
   };
 
   // session_start now fires for startup/reload/new/resume/fork (consolidated
@@ -308,6 +310,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     if (!state.isActive()) return;
     evidence.recordToolResult(event);
+    if (!uiAvailable) return;
     toolArtifacts.recordToolResult(ctx, event);
   });
 
@@ -324,6 +327,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("turn_end", async (event, ctx) => {
     if (!state.isActive()) return;
+    if (!uiAvailable) return;
     const s = state.getState()!;
 
     const config = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
@@ -430,6 +434,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", async (_event, ctx) => {
     if (!state.isActive()) return;
+    if (!uiAvailable) return;
 
     state.incrementTurnCount();
     const s = state.getState()!;
@@ -729,14 +734,16 @@ export default function (pi: ExtensionAPI) {
     modelId: string,
     outcome: string,
   ): Promise<string> => {
+    const shouldRenderUI = ctx.hasUI;
     if (state.getState()?.checklistEnabled === false) {
-      updateUI(ctx, state.getState());
+      if (shouldRenderUI) updateUI(ctx, state.getState());
       return getChecklistLabel(state.getState());
     }
 
     const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
     let spinnerIndex = 0;
     const renderBootstrapping = () => {
+      if (!shouldRenderUI) return;
       updateUI(ctx, state.getState(), {
         type: "bootstrapping",
         frame: spinnerFrames[spinnerIndex],
@@ -745,24 +752,26 @@ export default function (pi: ExtensionAPI) {
     };
 
     renderBootstrapping();
-    const spinner = setInterval(() => {
-      spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
-      renderBootstrapping();
-    }, 100);
+    const spinner = shouldRenderUI
+      ? setInterval(() => {
+          spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+          renderBootstrapping();
+        }, 100)
+      : undefined;
 
     try {
       const checklistItems = await generateCompletionChecklist(ctx, provider, modelId, outcome, getDebugOptions(ctx));
       if (checklistItems.length > 0) {
         state.setCompletionChecklist(checklistItems);
-        updateUI(ctx, state.getState());
+        if (shouldRenderUI) updateUI(ctx, state.getState());
         return getChecklistLabel(state.getState());
       }
 
       state.setChecklistSetup({ status: "failed", count: 0, source: "bootstrap-llm", error: "No checklist generated" });
-      updateUI(ctx, state.getState());
+      if (shouldRenderUI) updateUI(ctx, state.getState());
       return getChecklistLabel(state.getState());
     } finally {
-      clearInterval(spinner);
+      if (spinner) clearInterval(spinner);
     }
   };
 
