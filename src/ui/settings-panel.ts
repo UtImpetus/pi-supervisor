@@ -13,7 +13,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
 import { type SettingItem, SettingsList, type SettingsListTheme } from "@mariozechner/pi-tui";
-import type { Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
+import type { CompletionChecklistItem, Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
 import { detectSensitivityPreset, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
 
 const SENSITIVITIES: Sensitivity[] = ["ultralight", "low", "medium", "high", "custom"];
@@ -53,10 +53,11 @@ export interface SettingsResult {
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled?: boolean;
   outcome?: string;
+  checklistItems?: Array<Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">>;
   resetStats?: boolean;
   widget?: boolean;
   debugPayloads?: boolean;
-  action?: "stop" | "editOutcome" | "resetStats";
+  action?: "stop" | "editOutcome" | "editChecklist" | "regenerateChecklist" | "resetStats";
 }
 
 export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
@@ -65,6 +66,7 @@ export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
     draft.sensitivity !== undefined ||
     draft.checklistEnabled !== undefined ||
     draft.outcome !== undefined ||
+    draft.checklistItems !== undefined ||
     draft.resetStats !== undefined ||
     draft.widget !== undefined ||
     draft.debugPayloads !== undefined
@@ -79,6 +81,7 @@ export async function openSettings(
   ctx: ExtensionContext,
   state: SupervisorState | null,
   defaults: SettingsDefaults,
+  initialDraft: SettingsResult = {},
 ): Promise<SettingsResult | null> {
   const currentProvider = state?.provider ?? defaults.provider;
   const currentModelId = state?.modelId ?? defaults.modelId;
@@ -94,7 +97,7 @@ export async function openSettings(
   let draftConfig: SensitivityConfig = { ...currentConfig };
   let draftSensitivityConfig: SensitivityConfig | undefined = currentSensitivity === "custom" ? { ...currentConfig } : undefined;
 
-  const draft: SettingsResult = {};
+  const draft: SettingsResult = { ...initialDraft };
 
   return ctx.ui.custom<SettingsResult | null>((tui, theme, _kb, done) => {
     const submit = (action?: SettingsResult["action"]) => {
@@ -137,6 +140,17 @@ export async function openSettings(
         return draftConfig;
       }
       return currentConfig;
+    };
+
+    const formatChecklistValue = () => {
+      const checklist = state?.completionChecklist;
+      if (currentChecklistEnabled === false) return "disabled";
+      if (!checklist) return "not set";
+      if (draft.checklistItems !== undefined) return `draft (${draft.checklistItems.length} items)`;
+      if (checklist.status === "pending") return "setting up";
+      if (checklist.status === "failed") return "fallback";
+      const passed = checklist.items.filter((item) => item.status === "passed").length;
+      return `${passed}/${checklist.count}`;
     };
 
     const items: SettingItem[] = [
@@ -208,10 +222,32 @@ export async function openSettings(
       items.push({
         id: "editOutcome",
         label: "Edit Outcome",
-        description: "Edit the active supervised outcome and restart runtime tracking",
+        description: "Edit the active supervised outcome as a draft; changes apply on Apply & Close",
         currentValue: "",
         values: ["edit"],
       });
+      items.push({
+        id: "checklist",
+        label: "Checklist",
+        description: "Current or drafted completion checklist for this supervision run",
+        currentValue: formatChecklistValue(),
+      });
+      if (currentChecklistEnabled) {
+        items.push({
+          id: "editChecklist",
+          label: "Edit Checklist",
+          description: "Edit the checklist as a draft; changes apply on Apply & Close",
+          currentValue: "",
+          values: ["edit"],
+        });
+        items.push({
+          id: "regenerateChecklist",
+          label: "Regenerate Checklist",
+          description: "Generate a fresh checklist draft from the current draft/live outcome; applies on Apply & Close",
+          currentValue: "",
+          values: ["regenerate"],
+        });
+      }
       items.push({
         id: "resetStats",
         label: "Reset Runtime Stats",
@@ -327,6 +363,10 @@ export async function openSettings(
           draft.checklistEnabled = newValue === "enabled";
         } else if (id === "editOutcome" && newValue === "edit") {
           submit("editOutcome");
+        } else if (id === "editChecklist" && newValue === "edit") {
+          submit("editChecklist");
+        } else if (id === "regenerateChecklist" && newValue === "regenerate") {
+          submit("regenerateChecklist");
         } else if (id === "resetStats" && newValue === "reset") {
           draft.resetStats = true;
           submit("resetStats");

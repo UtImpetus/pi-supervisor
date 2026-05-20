@@ -209,22 +209,52 @@ export class SupervisorStateManager {
     this.persistState();
   }
 
-  restartRuntime(outcome = this.state?.outcome): void {
-    if (!this.state || !outcome) return;
+  setOutcome(outcome: string): void {
+    if (!this.state) return;
     this.state.outcome = outcome;
+    this.persistState();
+  }
+
+  resetChecklistProgress(preserveReadyItems = true): void {
+    if (!this.state) return;
+    if (this.state.checklistEnabled === false) {
+      this.state.completionChecklist = undefined;
+      this.persistState();
+      return;
+    }
+
+    const checklist = this.state.completionChecklist;
+    if (preserveReadyItems && checklist?.status === "ready" && checklist.items.length > 0) {
+      this.state.completionChecklist = {
+        ...checklist,
+        currentIndex: 0,
+        summaryRequested: false,
+        items: checklist.items.map((item) => ({
+          ...item,
+          status: "pending",
+          attempts: 0,
+        })),
+      };
+      this.persistState();
+      return;
+    }
+
+    this.state.completionChecklist = {
+      status: "pending",
+      count: 0,
+      currentIndex: 0,
+      summaryRequested: false,
+      items: [],
+    };
+    this.persistState();
+  }
+
+  resetRuntimeStats(): void {
+    if (!this.state) return;
     this.state.interventions = [];
     this.state.startedAt = Date.now();
     this.state.turnCount = 0;
-    this.state.completionChecklist = this.state.checklistEnabled === false
-      ? undefined
-      : {
-          status: "pending",
-          count: 0,
-          currentIndex: 0,
-          summaryRequested: false,
-          items: [],
-        };
-    this.persistState();
+    this.resetChecklistProgress(true);
   }
 
   /** Restore state/preferences from session entries (picks the most recent of each type). */

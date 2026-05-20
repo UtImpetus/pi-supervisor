@@ -90,8 +90,11 @@ Run `/supervise` (no args) or `/supervise:settings` to open the interactive sett
 - **Completion Checklist** — enable/disable the mandatory completion checklist gate (enabled by default)
 - **Widget** — toggle visibility
 - **Outcome** (when active) — shows the current goal plus steer/turn stats
-- **Edit Outcome** (when active) — change the tracked outcome at runtime and restart runtime tracking
-- **Reset Runtime Stats** (when active) — reset steer/turn/checklist progress for the current supervision run
+- **Edit Outcome** (when active) — edit the active outcome as a draft; it applies only after **Apply & Close**
+- **Checklist** (when active) — shows the current or drafted checklist status
+- **Edit Checklist** (when active) — edit the checklist as a draft; it applies only after **Apply & Close**
+- **Regenerate Checklist** (when active) — build a fresh checklist draft from the current draft/live outcome; it applies only after **Apply & Close**
+- **Reset Runtime Stats** (when active) — immediately reset steer/turn/checklist progress for the current supervision run
 - **Stop** (when active) — stop supervision directly from the panel
 
 Navigate with arrow keys.
@@ -150,7 +153,9 @@ Custom settings are also available via the `/supervise:sensitivity custom` comma
 
 ### Completion Checklist
 
-By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can now disable that gate from the settings panel, via saved config, or with `start_supervision.checklistEnabled` when you want a lighter workflow.
+By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can disable that gate from the settings panel, via saved config, or with `start_supervision.checklistEnabled` when you want a lighter workflow.
+
+When you change the active outcome from the settings panel and then press **Apply & Close**, the supervisor keeps its current turn/steer statistics but automatically rebuilds the checklist for the new outcome unless you have staged a manual checklist edit/draft. Manual checklist edits and regenerate actions are also staged until **Apply & Close**. `Reset Runtime Stats` is the separate immediate action when you want to zero the counters and restart checklist progress without changing the outcome.
 
 **End-of-run** (`agent_end`): fires once per user prompt after the agent finishes and goes idle. The supervisor must decide `done`, `steer`, or `continue`.
 

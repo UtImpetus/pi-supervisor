@@ -380,7 +380,27 @@ describe("SupervisorStateManager", () => {
     expect(pi.appendEntry).toHaveBeenCalledTimes(2);
   });
 
-  it("can restart runtime tracking and optionally replace the outcome", () => {
+  it("can update the outcome without resetting runtime stats", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.start("goal", "anthropic", "model", "medium");
+    mgr.incrementTurnCount();
+    mgr.incrementTurnCount();
+    mgr.addIntervention({ turnCount: 2, message: "stay focused", reasoning: "drift", timestamp: 1 });
+
+    pi.appendEntry.mockClear();
+    mgr.setOutcome("new goal");
+
+    expect(mgr.getState()).toMatchObject({
+      outcome: "new goal",
+      turnCount: 2,
+      interventions: [{ turnCount: 2, message: "stay focused", reasoning: "drift", timestamp: 1 }],
+    });
+    expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("can reset runtime stats while preserving a ready checklist", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);
 
@@ -391,21 +411,29 @@ describe("SupervisorStateManager", () => {
     mgr.setCompletionChecklist([
       { id: "check-1", title: "Check one", description: "First check", verificationPrompt: "Verify it." },
     ]);
+    mgr.incrementCurrentChecklistAttempt();
     mgr.markCurrentChecklistItemPassed();
 
     pi.appendEntry.mockClear();
-    mgr.restartRuntime("new goal");
+    mgr.resetRuntimeStats();
 
     expect(mgr.getState()).toMatchObject({
-      outcome: "new goal",
+      outcome: "goal",
       interventions: [],
       turnCount: 0,
       completionChecklist: {
-        status: "pending",
-        count: 0,
+        status: "ready",
+        count: 1,
         currentIndex: 0,
         summaryRequested: false,
-        items: [],
+        items: [{
+          id: "check-1",
+          title: "Check one",
+          description: "First check",
+          verificationPrompt: "Verify it.",
+          status: "pending",
+          attempts: 0,
+        }],
       },
     });
     expect(mgr.getState()?.startedAt).toBeGreaterThan(0);

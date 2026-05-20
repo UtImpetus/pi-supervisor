@@ -41,7 +41,7 @@ import {
 } from "./lesson-learned.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
 import { deriveArtifactSearchTerms, SessionToolArtifactStore } from "./tool-artifacts.js";
-import type { Sensitivity, SensitivityConfig, SteeringDecision } from "./types.js";
+import type { CompletionChecklistItem, Sensitivity, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
 import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
 import { pickModel } from "./ui/model-picker.js";
 import { openSettings, type SettingsResult } from "./ui/settings-panel.js";
@@ -69,6 +69,64 @@ function extractThinking(accumulated: string): string {
 
 // After this many consecutive idle-state steers with no "done", run a lenient final evaluation.
 const MAX_IDLE_STEERS = 5;
+
+type EditableChecklistItem = Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">;
+
+function slugifyChecklistId(input: string): string {
+  const slug = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "check";
+}
+
+function serializeChecklistForEditor(items: EditableChecklistItem[]): string {
+  return JSON.stringify(items, null, 2) + "\n";
+}
+
+function parseChecklistFromEditor(text: string): EditableChecklistItem[] {
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error("Checklist editor expects a non-empty JSON array. Disable the checklist instead of saving an empty list.");
+  }
+
+  const seen = new Map<string, number>();
+  return parsed.map((item, index) => {
+    if (typeof item !== "object" || item === null) {
+      throw new Error(`Checklist item ${index + 1} must be an object.`);
+    }
+
+    const value = item as Record<string, unknown>;
+    const title = typeof value.title === "string" ? value.title.trim() : "";
+    const description = typeof value.description === "string" ? value.description.trim() : "";
+    const verificationPrompt = typeof value.verificationPrompt === "string" ? value.verificationPrompt.trim() : "";
+    if (!title || !description || !verificationPrompt) {
+      throw new Error(`Checklist item ${index + 1} must include non-empty title, description, and verificationPrompt fields.`);
+    }
+
+    const requestedId = typeof value.id === "string" ? value.id.trim() : "";
+    const baseId = requestedId || slugifyChecklistId(title);
+    const count = seen.get(baseId) ?? 0;
+    seen.set(baseId, count + 1);
+
+    return {
+      id: count === 0 ? baseId : `${baseId}-${count + 1}`,
+      title,
+      description,
+      verificationPrompt,
+    };
+  });
+}
+
+function toEditableChecklistItems(state: SupervisorState | null): EditableChecklistItem[] {
+  const items = state?.completionChecklist?.items ?? [];
+  return items.map(({ id, title, description, verificationPrompt }) => ({
+    id,
+    title,
+    description,
+    verificationPrompt,
+  }));
+}
 
 export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
@@ -163,24 +221,13 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  const restartActiveSupervision = async (ctx: ExtensionContext, outcome?: string): Promise<string> => {
-    const activeState = state.getState();
-    if (!activeState?.active) return "";
-
-    state.restartRuntime(outcome);
-    idleSteers = 0;
-    resetRunEvidence();
-    labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
-
-    const restartedState = state.getState();
-    if (!restartedState?.active) return "";
-    return await bootstrapCompletionChecklist(ctx, restartedState.provider, restartedState.modelId, restartedState.outcome);
-  };
-
   const applySettingsResult = async (ctx: ExtensionContext, result: SettingsResult | null) => {
     if (!result) return;
 
-    const willRestartRuntime = Boolean(result.outcome !== undefined || result.resetStats);
+    const previousOutcome = state.getState()?.outcome;
+    const nextOutcome = result.outcome?.trim();
+    const outcomeChanged = Boolean(state.isActive() && nextOutcome && nextOutcome !== previousOutcome);
+    const hasManualChecklistDraft = result.checklistItems !== undefined;
 
     if (result.model) {
       const { provider, modelId } = result.model;
@@ -208,9 +255,10 @@ export default function (pi: ExtensionAPI) {
     if (result.checklistEnabled !== undefined) {
       state.setChecklistEnabled(result.checklistEnabled);
       const saved = saveWorkspaceConfig(ctx.cwd, { checklistEnabled: result.checklistEnabled });
-      if (result.checklistEnabled && state.isActive() && !willRestartRuntime) {
+      if (result.checklistEnabled && state.isActive() && !outcomeChanged && !hasManualChecklistDraft && !result.resetStats) {
         const activeState = state.getState();
         if (activeState) {
+          state.resetChecklistProgress(false);
           await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome);
         }
       }
@@ -221,17 +269,37 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    if ((result.outcome !== undefined || result.resetStats) && state.isActive()) {
-      const nextOutcome = result.outcome?.trim();
-      const checkLabel = await restartActiveSupervision(ctx, nextOutcome && nextOutcome.length > 0 ? nextOutcome : undefined);
-      if (nextOutcome && nextOutcome.length > 0) {
+    if (outcomeChanged && nextOutcome) {
+      state.setOutcome(nextOutcome);
+      idleSteers = 0;
+      if (state.getState()?.checklistEnabled !== false && !hasManualChecklistDraft) {
+        state.resetChecklistProgress(false);
+        const activeState = state.getState();
+        const checkLabel = activeState
+          ? await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome)
+          : "";
         ctx.ui.notify(
           `Supervisor outcome updated: "${nextOutcome.slice(0, 60)}${nextOutcome.length > 60 ? "…" : ""}"${checkLabel}`,
           "info"
         );
-      } else if (result.resetStats) {
-        ctx.ui.notify(`Supervisor runtime stats reset.${checkLabel}`, "info");
+      } else {
+        ctx.ui.notify(
+          `Supervisor outcome updated: "${nextOutcome.slice(0, 60)}${nextOutcome.length > 60 ? "…" : ""}"`,
+          "info"
+        );
       }
+    }
+
+    if (hasManualChecklistDraft && state.isActive() && state.getState()?.checklistEnabled !== false) {
+      state.setCompletionChecklist(result.checklistItems!);
+      ctx.ui.notify(`Supervisor checklist updated (${result.checklistItems!.length} items).`, "info");
+    }
+
+    if (result.resetStats && state.isActive()) {
+      state.resetRuntimeStats();
+      idleSteers = 0;
+      resetRunEvidence();
+      ctx.ui.notify("Supervisor runtime stats reset.", "info");
     }
 
     if (result.widget !== undefined) {
@@ -496,34 +564,127 @@ export default function (pi: ExtensionAPI) {
 
   // ---- /supervise commands ----
 
+  const buildSettingsDraftPreview = (ctx: ExtensionContext, draft: SettingsResult) => {
+    const liveState = state.getState();
+    const defaults = resolveSettingsDefaults(ctx);
+    const previewDefaults = {
+      ...defaults,
+      provider: draft.model?.provider ?? defaults.provider,
+      modelId: draft.model?.modelId ?? defaults.modelId,
+      sensitivity: draft.sensitivity ?? defaults.sensitivity,
+      sensitivityConfig: draft.sensitivityConfig ?? defaults.sensitivityConfig,
+      checklistEnabled: draft.checklistEnabled ?? defaults.checklistEnabled,
+      widgetVisible: draft.widget ?? defaults.widgetVisible,
+      debugPayloads: draft.debugPayloads ?? defaults.debugPayloads,
+    };
+
+    const previewState = !liveState?.active
+      ? liveState
+      : {
+          ...liveState,
+          provider: draft.model?.provider ?? liveState.provider,
+          modelId: draft.model?.modelId ?? liveState.modelId,
+          sensitivity: draft.sensitivity ?? liveState.sensitivity,
+          sensitivityConfig: draft.sensitivityConfig ?? liveState.sensitivityConfig,
+          checklistEnabled: draft.checklistEnabled ?? liveState.checklistEnabled,
+          outcome: draft.outcome ?? liveState.outcome,
+          completionChecklist: draft.checklistItems !== undefined
+            ? {
+                status: "ready" as const,
+                count: draft.checklistItems.length,
+                source: "bootstrap-llm" as const,
+                currentIndex: 0,
+                summaryRequested: false,
+                items: draft.checklistItems.map((item) => ({ ...item, status: "pending" as const, attempts: 0 })),
+              }
+            : draft.checklistEnabled === false
+              ? undefined
+              : liveState.completionChecklist,
+        };
+
+    return { previewState, previewDefaults };
+  };
+
   const openSupervisorSettingsPanel = async (ctx: ExtensionContext) => {
+    const pendingDraft: SettingsResult = {};
+
     while (true) {
-      const s = state.getState();
-      const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
+      const { previewState, previewDefaults } = buildSettingsDraftPreview(ctx, pendingDraft);
+      const result = await openSettings(ctx, previewState, previewDefaults, pendingDraft);
       if (result === null) return;
 
-      if (result.action === "editOutcome") {
-        const activeState = state.getState();
+      const { action, resetStats: _ignoredResetStats, ...draftPatch } = result;
+      Object.assign(pendingDraft, draftPatch);
+
+      if (action === "editOutcome") {
+        const activeState = previewState;
         if (!activeState?.active) return;
-        const edited = await ctx.ui.editor("Edit supervised outcome", activeState.outcome);
+        const edited = await ctx.ui.editor("Edit supervised outcome", pendingDraft.outcome ?? activeState.outcome);
         if (edited === undefined) continue;
         const trimmed = edited.trim();
         if (!trimmed) {
           ctx.ui.notify("Outcome cannot be empty.", "warning");
           continue;
         }
-        result.outcome = trimmed;
-        delete result.action;
-        await applySettingsResult(ctx, result);
+        pendingDraft.outcome = trimmed;
+        delete pendingDraft.checklistItems;
         continue;
       }
 
-      if (result.action === "resetStats") {
-        await applySettingsResult(ctx, result);
+      if (action === "editChecklist") {
+        const activeState = previewState;
+        if (!activeState?.active || previewDefaults.checklistEnabled === false) continue;
+        const seedItems = pendingDraft.checklistItems ?? toEditableChecklistItems(activeState);
+        const initialText = serializeChecklistForEditor(
+          seedItems.length > 0
+            ? seedItems
+            : [{
+                id: "new-check",
+                title: "New checklist item",
+                description: "Describe what must be true before finishing.",
+                verificationPrompt: "Tell the agent exactly what evidence to show or what to fix.",
+              }],
+        );
+        const edited = await ctx.ui.editor("Edit completion checklist JSON", initialText);
+        if (edited === undefined) continue;
+        try {
+          pendingDraft.checklistItems = parseChecklistFromEditor(edited);
+        } catch (error) {
+          ctx.ui.notify(error instanceof Error ? error.message : "Invalid checklist JSON.", "warning");
+        }
         continue;
       }
 
-      await applySettingsResult(ctx, result);
+      if (action === "regenerateChecklist") {
+        const activeState = previewState;
+        if (!activeState?.active || previewDefaults.checklistEnabled === false) continue;
+        const checklistItems = await generateCompletionChecklist(
+          ctx,
+          activeState.provider,
+          activeState.modelId,
+          pendingDraft.outcome ?? activeState.outcome,
+          getDebugOptions(ctx),
+        );
+        if (checklistItems.length === 0) {
+          ctx.ui.notify("No checklist generated for the current outcome draft.", "warning");
+          continue;
+        }
+        pendingDraft.checklistItems = checklistItems;
+        ctx.ui.notify(`Draft checklist regenerated (${checklistItems.length} items). Apply & Close to use it.`, "info");
+        continue;
+      }
+
+      if (action === "resetStats") {
+        await applySettingsResult(ctx, { resetStats: true });
+        continue;
+      }
+
+      if (action === "stop") {
+        await applySettingsResult(ctx, { action: "stop" });
+        return;
+      }
+
+      await applySettingsResult(ctx, { ...pendingDraft, ...result });
       return;
     }
   };
