@@ -45,6 +45,7 @@ export class SupervisorStateManager {
       sensitivity,
       sensitivityConfig,
       checklistEnabled,
+      pendingOutcomeUpdate: undefined,
       interventions: [],
       startedAt: Date.now(),
       turnCount: 0,
@@ -73,6 +74,7 @@ export class SupervisorStateManager {
   stop(): void {
     if (!this.state) return;
     this.state.active = false;
+    this.state.pendingOutcomeUpdate = undefined;
     this.persistState();
   }
 
@@ -212,7 +214,26 @@ export class SupervisorStateManager {
   setOutcome(outcome: string): void {
     if (!this.state) return;
     this.state.outcome = outcome;
+    this.state.pendingOutcomeUpdate = undefined;
     this.persistState();
+  }
+
+  queueOutcomeUpdate(outcome: string): void {
+    if (!this.state) return;
+    this.state.pendingOutcomeUpdate = { outcome, requestedAt: Date.now() };
+    this.persistState();
+  }
+
+  consumePendingOutcomeUpdate(): string | null {
+    if (!this.state?.pendingOutcomeUpdate) return null;
+    const { outcome } = this.state.pendingOutcomeUpdate;
+    this.state.pendingOutcomeUpdate = undefined;
+    this.persistState();
+    return outcome;
+  }
+
+  peekPendingOutcomeUpdate(): string | null {
+    return this.state?.pendingOutcomeUpdate?.outcome ?? null;
   }
 
   resetChecklistProgress(preserveReadyItems = true): void {

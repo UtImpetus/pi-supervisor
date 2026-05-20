@@ -10,6 +10,7 @@
  *   /supervise:model [p/modelId]      — pick or set the supervisor model
  *   /supervise:sensitivity <preset>   — adjust steering sensitivity
  *   /supervise:widget                 — toggle widget visibility
+ *   /supervisor <outcome>             — update the active supervision outcome at runtime
  *   /supervise:debug [status|on|off|toggle] — manage payload debug logging
  *   /supervise:lesson-learned [optional guidance] — derive project-specific supervisor lessons from the current branch session and preview a .pi/SUPERVISOR.md proposal
  *
@@ -221,6 +222,33 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
+  const applyOutcomeUpdate = async (ctx: ExtensionContext, outcome: string): Promise<void> => {
+    if (!state.isActive()) return;
+
+    state.setOutcome(outcome);
+    idleSteers = 0;
+    labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
+
+    if (state.getState()?.checklistEnabled !== false) {
+      state.resetChecklistProgress(false);
+      const activeState = state.getState();
+      const checkLabel = activeState
+        ? await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome)
+        : "";
+      ctx.ui.notify(
+        `Supervisor outcome updated: "${outcome.slice(0, 60)}${outcome.length > 60 ? "…" : ""}"${checkLabel}`,
+        "info"
+      );
+    } else {
+      ctx.ui.notify(
+        `Supervisor outcome updated: "${outcome.slice(0, 60)}${outcome.length > 60 ? "…" : ""}"`,
+        "info"
+      );
+    }
+
+    if (uiAvailable) updateUI(ctx, state.getState());
+  };
+
   const applySettingsResult = async (ctx: ExtensionContext, result: SettingsResult | null) => {
     if (!result) return;
 
@@ -270,23 +298,16 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (outcomeChanged && nextOutcome) {
-      state.setOutcome(nextOutcome);
-      idleSteers = 0;
-      if (state.getState()?.checklistEnabled !== false && !hasManualChecklistDraft) {
-        state.resetChecklistProgress(false);
-        const activeState = state.getState();
-        const checkLabel = activeState
-          ? await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome)
-          : "";
-        ctx.ui.notify(
-          `Supervisor outcome updated: "${nextOutcome.slice(0, 60)}${nextOutcome.length > 60 ? "…" : ""}"${checkLabel}`,
-          "info"
-        );
-      } else {
+      if (hasManualChecklistDraft) {
+        state.setOutcome(nextOutcome);
+        idleSteers = 0;
+        labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
         ctx.ui.notify(
           `Supervisor outcome updated: "${nextOutcome.slice(0, 60)}${nextOutcome.length > 60 ? "…" : ""}"`,
           "info"
         );
+      } else {
+        await applyOutcomeUpdate(ctx, nextOutcome);
       }
     }
 
@@ -396,6 +417,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", async (event, ctx) => {
     if (!state.isActive()) return;
     if (!uiAvailable) return;
+    if (state.peekPendingOutcomeUpdate()) return;
     const s = state.getState()!;
 
     const config = resolveSensitivityConfig(s.sensitivity, s.sensitivityConfig);
@@ -503,6 +525,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => {
     if (!state.isActive()) return;
     if (!uiAvailable) return;
+
+    const pendingOutcomeUpdate = state.consumePendingOutcomeUpdate();
+    if (pendingOutcomeUpdate) {
+      await applyOutcomeUpdate(ctx, pendingOutcomeUpdate);
+      return;
+    }
 
     state.incrementTurnCount();
     const s = state.getState()!;
@@ -740,6 +768,39 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     await openSupervisorSettingsPanel(ctx);
+  };
+
+  const runQuickOutcomeCommand = async (ctx: ExtensionContext, rawOutcome: string) => {
+    const outcome = rawOutcome.trim();
+    if (!outcome) {
+      ctx.ui.notify("Usage: /supervisor <new outcome>", "warning");
+      return;
+    }
+
+    const activeState = state.getState();
+    if (!activeState?.active) {
+      ctx.ui.notify("Supervisor is not active. Use /supervise <outcome> to start.", "warning");
+      return;
+    }
+
+    const pendingOutcome = state.peekPendingOutcomeUpdate();
+    if (pendingOutcome === outcome || (!pendingOutcome && activeState.outcome === outcome)) {
+      ctx.ui.notify("Supervisor outcome is already set to that value.", "info");
+      return;
+    }
+
+    if (ctx.isIdle()) {
+      await applyOutcomeUpdate(ctx, outcome);
+      return;
+    }
+
+    state.queueOutcomeUpdate(outcome);
+    ctx.ui.notify(
+      activeState.checklistEnabled === false
+        ? `Supervisor outcome update queued; it will apply after the current run finishes.`
+        : `Supervisor outcome update queued; it will apply after the current run finishes and regenerate the checklist.`,
+      "info"
+    );
   };
 
   const runModelCommand = async (ctx: ExtensionContext, spec: string) => {
@@ -1052,6 +1113,13 @@ export default function (pi: ExtensionAPI) {
     description: "Show or change supervisor payload debug logging",
     handler: async (args, ctx) => {
       runDebugCommand(ctx, args?.trim() ?? "");
+    },
+  });
+
+  pi.registerCommand("supervisor", {
+    description: "Update the active supervision outcome at runtime",
+    handler: async (args, ctx) => {
+      await runQuickOutcomeCommand(ctx, args?.trim() ?? "");
     },
   });
 

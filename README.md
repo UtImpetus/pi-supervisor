@@ -50,6 +50,7 @@ pi -e ~/projects/pi-supervisor/src/index.ts
 | `/supervise:model [provider/modelId]` | Open the interactive model picker or set supervisor model directly |
 | `/supervise:sensitivity <ultralight\|low\|medium\|high\|custom>` | Adjust steering aggressiveness |
 | `/supervise:debug [status\|on\|off\|toggle]` | Show or change supervisor payload debug logging |
+| `/supervisor <new outcome>` | Update the active supervision outcome at runtime |
 | `/supervise:lesson-learned [optional guidance]` | Derive project-specific supervisor lessons from the current branch session and preview a `.pi/SUPERVISOR.md` proposal |
 
 Legacy compatibility forms like `/supervise stop`, `/supervise model ...`, and `/supervise sensitivity ...` are still supported.
@@ -64,6 +65,10 @@ Legacy compatibility forms like `/supervise stop`, `/supervise model ...`, and `
 
 /supervise:sensitivity low
 # Only steer when seriously off track
+
+/supervisor Also verify that hello.txt has no trailing newline and is exactly 5 bytes
+# If the agent is busy, queue the outcome update for the next idle checkpoint.
+# The checklist is regenerated for the new outcome when the update applies.
 
 /supervise:lesson-learned focus on repeated CLI verification gaps
 # Builds a project-local .pi/SUPERVISOR.md proposal from the current branch session,

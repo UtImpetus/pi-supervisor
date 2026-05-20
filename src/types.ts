@@ -116,6 +116,7 @@ export interface SupervisorState {
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;  // present when "custom"
   checklistEnabled?: boolean;
+  pendingOutcomeUpdate?: { outcome: string; requestedAt: number };
   interventions: SupervisorIntervention[];
   startedAt: number;
   turnCount: number;
