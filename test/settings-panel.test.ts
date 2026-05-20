@@ -16,6 +16,11 @@ describe("hasSettingsDraftChanges", () => {
     expect(hasSettingsDraftChanges({ checklistEnabled: false })).toBe(true);
   });
 
+  it("treats outcome edits and stat resets as real draft changes", () => {
+    expect(hasSettingsDraftChanges({ outcome: "new goal" })).toBe(true);
+    expect(hasSettingsDraftChanges({ resetStats: true })).toBe(true);
+  });
+
   it("still detects existing draft fields", () => {
     expect(hasSettingsDraftChanges({ widget: true })).toBe(true);
     expect(hasSettingsDraftChanges({ sensitivity: "high" })).toBe(true);

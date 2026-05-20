@@ -89,7 +89,9 @@ Run `/supervise` (no args) or `/supervise:settings` to open the interactive sett
   - Changing any sub-parameter auto-switches to `custom`; matching a preset snaps back to its name
 - **Completion Checklist** — enable/disable the mandatory completion checklist gate (enabled by default)
 - **Widget** — toggle visibility
-- **Outcome** (when active) — shows goal, steer count, and turn count
+- **Outcome** (when active) — shows the current goal plus steer/turn stats
+- **Edit Outcome** (when active) — change the tracked outcome at runtime and restart runtime tracking
+- **Reset Runtime Stats** (when active) — reset steer/turn/checklist progress for the current supervision run
 - **Stop** (when active) — stop supervision directly from the panel
 
 Navigate with arrow keys.
@@ -148,7 +150,7 @@ Custom settings are also available via the `/supervise:sensitivity custom` comma
 
 ### Completion Checklist
 
-By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can now disable that gate from the settings panel (or via saved config) when you want a lighter workflow.
+By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can now disable that gate from the settings panel, via saved config, or with `start_supervision.checklistEnabled` when you want a lighter workflow.
 
 **End-of-run** (`agent_end`): fires once per user prompt after the agent finishes and goes idle. The supervisor must decide `done`, `steer`, or `continue`.
 

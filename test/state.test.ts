@@ -379,4 +379,36 @@ describe("SupervisorStateManager", () => {
     expect(mgr.getPreferences().checklistEnabled).toBe(true);
     expect(pi.appendEntry).toHaveBeenCalledTimes(2);
   });
+
+  it("can restart runtime tracking and optionally replace the outcome", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.start("goal", "anthropic", "model", "medium");
+    mgr.incrementTurnCount();
+    mgr.incrementTurnCount();
+    mgr.addIntervention({ turnCount: 2, message: "stay focused", reasoning: "drift", timestamp: 1 });
+    mgr.setCompletionChecklist([
+      { id: "check-1", title: "Check one", description: "First check", verificationPrompt: "Verify it." },
+    ]);
+    mgr.markCurrentChecklistItemPassed();
+
+    pi.appendEntry.mockClear();
+    mgr.restartRuntime("new goal");
+
+    expect(mgr.getState()).toMatchObject({
+      outcome: "new goal",
+      interventions: [],
+      turnCount: 0,
+      completionChecklist: {
+        status: "pending",
+        count: 0,
+        currentIndex: 0,
+        summaryRequested: false,
+        items: [],
+      },
+    });
+    expect(mgr.getState()?.startedAt).toBeGreaterThan(0);
+    expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+  });
 });

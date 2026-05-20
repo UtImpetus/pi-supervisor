@@ -52,9 +52,11 @@ export interface SettingsResult {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled?: boolean;
+  outcome?: string;
+  resetStats?: boolean;
   widget?: boolean;
   debugPayloads?: boolean;
-  action?: "stop";
+  action?: "stop" | "editOutcome" | "resetStats";
 }
 
 export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
@@ -62,6 +64,8 @@ export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
     draft.model !== undefined ||
     draft.sensitivity !== undefined ||
     draft.checklistEnabled !== undefined ||
+    draft.outcome !== undefined ||
+    draft.resetStats !== undefined ||
     draft.widget !== undefined ||
     draft.debugPayloads !== undefined
   );
@@ -93,7 +97,7 @@ export async function openSettings(
   const draft: SettingsResult = {};
 
   return ctx.ui.custom<SettingsResult | null>((tui, theme, _kb, done) => {
-    const submit = (action?: "stop") => {
+    const submit = (action?: SettingsResult["action"]) => {
       if (action) draft.action = action;
       if (hasSettingsDraftChanges(draft) || action) {
         done({ ...draft });
@@ -201,6 +205,20 @@ export async function openSettings(
         description: `Steers: ${state!.interventions.length} · Turns: ${state!.turnCount}`,
         currentValue: `"${state!.outcome.length > 60 ? state!.outcome.slice(0, 59) + "…" : state!.outcome}"`,
       });
+      items.push({
+        id: "editOutcome",
+        label: "Edit Outcome",
+        description: "Edit the active supervised outcome and restart runtime tracking",
+        currentValue: "",
+        values: ["edit"],
+      });
+      items.push({
+        id: "resetStats",
+        label: "Reset Runtime Stats",
+        description: "Reset steers, turns, and checklist progress for the active supervision run",
+        currentValue: "",
+        values: ["reset"],
+      });
     }
 
     items.push({
@@ -307,6 +325,11 @@ export async function openSettings(
           settingsList.invalidate();
         } else if (id === "checklistEnabled") {
           draft.checklistEnabled = newValue === "enabled";
+        } else if (id === "editOutcome" && newValue === "edit") {
+          submit("editOutcome");
+        } else if (id === "resetStats" && newValue === "reset") {
+          draft.resetStats = true;
+          submit("resetStats");
         } else if (id === "widget") {
           draft.widget = newValue === "visible";
         } else if (id === "debugPayloads") {

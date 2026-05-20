@@ -209,6 +209,24 @@ export class SupervisorStateManager {
     this.persistState();
   }
 
+  restartRuntime(outcome = this.state?.outcome): void {
+    if (!this.state || !outcome) return;
+    this.state.outcome = outcome;
+    this.state.interventions = [];
+    this.state.startedAt = Date.now();
+    this.state.turnCount = 0;
+    this.state.completionChecklist = this.state.checklistEnabled === false
+      ? undefined
+      : {
+          status: "pending",
+          count: 0,
+          currentIndex: 0,
+          summaryRequested: false,
+          items: [],
+        };
+    this.persistState();
+  }
+
   /** Restore state/preferences from session entries (picks the most recent of each type). */
   loadFromSession(ctx: ExtensionContext): void {
     const entries = ctx.sessionManager.getBranch();

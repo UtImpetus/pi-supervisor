@@ -162,8 +162,24 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
+  const restartActiveSupervision = async (ctx: ExtensionContext, outcome?: string): Promise<string> => {
+    const activeState = state.getState();
+    if (!activeState?.active) return "";
+
+    state.restartRuntime(outcome);
+    idleSteers = 0;
+    resetRunEvidence();
+    labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
+
+    const restartedState = state.getState();
+    if (!restartedState?.active) return "";
+    return await bootstrapCompletionChecklist(ctx, restartedState.provider, restartedState.modelId, restartedState.outcome);
+  };
+
   const applySettingsResult = async (ctx: ExtensionContext, result: SettingsResult | null) => {
     if (!result) return;
+
+    const willRestartRuntime = Boolean(result.outcome !== undefined || result.resetStats);
 
     if (result.model) {
       const { provider, modelId } = result.model;
@@ -191,7 +207,7 @@ export default function (pi: ExtensionAPI) {
     if (result.checklistEnabled !== undefined) {
       state.setChecklistEnabled(result.checklistEnabled);
       const saved = saveWorkspaceConfig(ctx.cwd, { checklistEnabled: result.checklistEnabled });
-      if (result.checklistEnabled && state.isActive()) {
+      if (result.checklistEnabled && state.isActive() && !willRestartRuntime) {
         const activeState = state.getState();
         if (activeState) {
           await bootstrapCompletionChecklist(ctx, activeState.provider, activeState.modelId, activeState.outcome);
@@ -202,6 +218,19 @@ export default function (pi: ExtensionAPI) {
           (saved ? " · saved to .pi/" : ""),
         "info"
       );
+    }
+
+    if ((result.outcome !== undefined || result.resetStats) && state.isActive()) {
+      const nextOutcome = result.outcome?.trim();
+      const checkLabel = await restartActiveSupervision(ctx, nextOutcome && nextOutcome.length > 0 ? nextOutcome : undefined);
+      if (nextOutcome && nextOutcome.length > 0) {
+        ctx.ui.notify(
+          `Supervisor outcome updated: "${nextOutcome.slice(0, 60)}${nextOutcome.length > 60 ? "…" : ""}"${checkLabel}`,
+          "info"
+        );
+      } else if (result.resetStats) {
+        ctx.ui.notify(`Supervisor runtime stats reset.${checkLabel}`, "info");
+      }
     }
 
     if (result.widget !== undefined) {
@@ -463,9 +492,35 @@ export default function (pi: ExtensionAPI) {
   // ---- /supervise commands ----
 
   const openSupervisorSettingsPanel = async (ctx: ExtensionContext) => {
-    const s = state.getState();
-    const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
-    await applySettingsResult(ctx, result);
+    while (true) {
+      const s = state.getState();
+      const result = await openSettings(ctx, s, resolveSettingsDefaults(ctx));
+      if (result === null) return;
+
+      if (result.action === "editOutcome") {
+        const activeState = state.getState();
+        if (!activeState?.active) return;
+        const edited = await ctx.ui.editor("Edit supervised outcome", activeState.outcome);
+        if (edited === undefined) continue;
+        const trimmed = edited.trim();
+        if (!trimmed) {
+          ctx.ui.notify("Outcome cannot be empty.", "warning");
+          continue;
+        }
+        result.outcome = trimmed;
+        delete result.action;
+        await applySettingsResult(ctx, result);
+        continue;
+      }
+
+      if (result.action === "resetStats") {
+        await applySettingsResult(ctx, result);
+        continue;
+      }
+
+      await applySettingsResult(ctx, result);
+      return;
+    }
   };
 
   const runWidgetCommand = (ctx: ExtensionContext) => {
