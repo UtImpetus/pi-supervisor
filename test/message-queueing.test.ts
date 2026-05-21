@@ -3,6 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number, label: string) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await sleep(10);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 const analyzeMock = vi.fn();
 const generateCompletionChecklistMock = vi.fn();
 const reviewChecklistItemMock = vi.fn();
@@ -84,7 +95,7 @@ describe("supervisor message queueing", () => {
     }
   });
 
-  it("queues agent_end steering as a follow-up message", async () => {
+  it("sends agent_end steering once the runtime becomes idle", async () => {
     const { default: initExtension } = await import("../src/index.js");
     const cwd = mkdtempSync(join(tmpdir(), "pi-supervisor-queue-"));
     tempDirs.push(cwd);
@@ -100,7 +111,8 @@ describe("supervisor message queueing", () => {
     const pi = makePi();
     initExtension(pi);
 
-    const ctx = makeCtx(cwd);
+    let idle = false;
+    const ctx = makeCtx(cwd, { isIdle: () => idle });
     const sessionStart = pi.events.get("session_start")?.[0];
     await sessionStart?.({ type: "session_start" }, ctx);
     const tool = pi.tools.get("start_supervision");
@@ -109,11 +121,15 @@ describe("supervisor message queueing", () => {
     const agentEnd = pi.events.get("agent_end")?.[0];
     await agentEnd?.({ type: "agent_end" }, ctx);
 
-    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(pi.sendUserMessage).toHaveBeenCalledWith("Stay focused on the goal.", { deliverAs: "followUp" });
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+
+    idle = true;
+    await waitUntil(() => pi.sendUserMessage.mock.calls.length === 1, 1000, "idle agent_end send");
+
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("Stay focused on the goal.");
   });
 
-  it("queues checklist steering as a follow-up message", async () => {
+  it("sends checklist steering once the runtime becomes idle", async () => {
     const { default: initExtension } = await import("../src/index.js");
     const cwd = mkdtempSync(join(tmpdir(), "pi-supervisor-queue-"));
     tempDirs.push(cwd);
@@ -142,7 +158,8 @@ describe("supervisor message queueing", () => {
     const pi = makePi();
     initExtension(pi);
 
-    const ctx = makeCtx(cwd);
+    let idle = false;
+    const ctx = makeCtx(cwd, { isIdle: () => idle });
     const sessionStart = pi.events.get("session_start")?.[0];
     await sessionStart?.({ type: "session_start" }, ctx);
     const tool = pi.tools.get("start_supervision");
@@ -153,7 +170,11 @@ describe("supervisor message queueing", () => {
     const agentEnd = pi.events.get("agent_end")?.[0];
     await agentEnd?.({ type: "agent_end" }, ctx);
 
-    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(pi.sendUserMessage).toHaveBeenCalledWith("Show the verification output.", { deliverAs: "followUp" });
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+
+    idle = true;
+    await waitUntil(() => pi.sendUserMessage.mock.calls.length === 1, 1000, "idle checklist send");
+
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("Show the verification output.");
   });
 });

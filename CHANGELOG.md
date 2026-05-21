@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.4] - 2026-05-21
 
 ### Fixed
-- Queue supervisor-generated user messages explicitly during `agent_end` and checklist steering so newer pi runtimes do not throw `Agent is already processing` lifecycle errors.
+- Defer `agent_end` and checklist supervisor messages until pi is truly idle before sending them, avoiding both `Agent is already processing` errors and stuck `followUp` deliveries on current pi runtimes.
 
 ## [0.4.3] - 2026-05-04
 
@@ -88,6 +88,8 @@ Initial release of `pi-supervisor`.
 - **Footer status** — always-visible one-liner showing outcome, model, and steer count while supervising
 - **Widget** — shows goal, model, and recent interventions above the editor
 
+[0.4.4]: https://github.com/tintinweb/pi-supervisor/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/tintinweb/pi-supervisor/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/tintinweb/pi-supervisor/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tintinweb/pi-supervisor/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tintinweb/pi-supervisor/compare/v0.3.0...v0.4.0

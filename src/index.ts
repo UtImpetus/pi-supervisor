@@ -133,6 +133,7 @@ export default function (pi: ExtensionAPI) {
   const state = new SupervisorStateManager(pi);
   const evidence = new SupervisorEvidenceTracker();
   const toolArtifacts = new SessionToolArtifactStore();
+  const pendingIdleSendTimers = new Set<ReturnType<typeof setTimeout>>();
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
   let lastEvidenceNoteContent: string | null = null;
   let uiAvailable = false;
@@ -194,7 +195,13 @@ export default function (pi: ExtensionAPI) {
     lastEvidenceNoteContent = null;
   };
 
+  const clearPendingIdleSendTimers = () => {
+    for (const timer of pendingIdleSendTimers) clearTimeout(timer);
+    pendingIdleSendTimers.clear();
+  };
+
   const stopSupervision = () => {
+    clearPendingIdleSendTimers();
     state.stop();
     idleSteers = 0;
     resetRunEvidence();
@@ -222,14 +229,48 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  // Always specify queue semantics for supervisor-generated user messages.
-  // `agent_end` runs before the parent agent is fully idle, so plain
-  // `sendUserMessage()` can race with the still-active run and throw.
-  const sendSupervisorUserMessage = async (
-    message: string,
-    deliverAs: "steer" | "followUp",
-  ): Promise<void> => {
-    await pi.sendUserMessage(message, { deliverAs });
+  const sendSupervisorSteerMessage = async (message: string): Promise<void> => {
+    await pi.sendUserMessage(message, { deliverAs: "steer" });
+  };
+
+  // `agent_end` handlers run before the parent agent becomes truly idle.
+  // Scheduling a follow-up there can leave the message stranded in current pi
+  // versions, so defer the plain user-message send until the runtime reports idle.
+  const scheduleSupervisorIdleMessage = (ctx: ExtensionContext, message: string): void => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const attemptSend = async (): Promise<void> => {
+      pendingIdleSendTimers.delete(timer);
+
+      if (!state.isActive()) return;
+      if (!ctx.isIdle()) {
+        timer = setTimeout(() => {
+          void attemptSend();
+        }, 10);
+        pendingIdleSendTimers.add(timer);
+        return;
+      }
+
+      try {
+        await pi.sendUserMessage(message);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes("Agent is already processing")) {
+          timer = setTimeout(() => {
+            void attemptSend();
+          }, 10);
+          pendingIdleSendTimers.add(timer);
+          return;
+        }
+
+        if (uiAvailable) ctx.ui.notify(`Supervisor failed to deliver a queued message: ${errorMessage}`, "warning");
+      }
+    };
+
+    timer = setTimeout(() => {
+      void attemptSend();
+    }, 0);
+    pendingIdleSendTimers.add(timer);
   };
 
   const applyOutcomeUpdate = async (ctx: ExtensionContext, outcome: string): Promise<void> => {
@@ -405,6 +446,9 @@ export default function (pi: ExtensionAPI) {
   // events). session_tree remains a separate event for tree-view navigation.
   pi.on("session_start", async (_event, ctx) => onSessionLoad(ctx));
   pi.on("session_tree", async (_event, ctx) => onSessionLoad(ctx));
+  pi.on("session_shutdown", async () => {
+    clearPendingIdleSendTimers();
+  });
 
   pi.on("tool_result", async (event, ctx) => {
     if (!state.isActive()) return;
@@ -463,7 +507,7 @@ export default function (pi: ExtensionAPI) {
       });
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("steer", state.getState()?.interventions.length));
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
-      await sendSupervisorUserMessage(decision.message, "steer");
+      await sendSupervisorSteerMessage(decision.message);
     }
   });
 
@@ -530,8 +574,8 @@ export default function (pi: ExtensionAPI) {
 
   // ---- After each agent run: analyze + steer ----
   // agent_end fires once per user prompt after the agent has finished its work for
-  // that run, but before the runtime is fully idle. Queue any supervisor reply as a
-  // follow-up instead of sending it immediately.
+  // that run, but before the runtime is fully idle. Defer any supervisor reply
+  // until the runtime actually becomes idle, then send it as a plain user message.
   // This is the critical checkpoint for all sensitivity levels.
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -583,7 +627,7 @@ export default function (pi: ExtensionAPI) {
       const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
       emitEvidenceNote(note);
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
-      await sendSupervisorUserMessage(decision.message, "followUp");
+      scheduleSupervisorIdleMessage(ctx, decision.message);
     } else if (decision.action === "done") {
       const checklistResult = await runChecklistGate(ctx, s);
       if (checklistResult === "steer" || checklistResult === "summary") {
@@ -959,7 +1003,7 @@ export default function (pi: ExtensionAPI) {
     const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
     emitEvidenceNote(note);
     updateUI(ctx, state.getState(), { type: "steering", message });
-    await sendSupervisorUserMessage(message, "followUp");
+    scheduleSupervisorIdleMessage(ctx, message);
   };
 
   const bootstrapCompletionChecklist = async (

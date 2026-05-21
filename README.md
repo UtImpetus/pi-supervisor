@@ -28,13 +28,13 @@ The supervisor is a pure outside observer. It runs in a separate in-memory pi se
 
 ### Delivery semantics
 
-Supervisor-generated user messages always use pi's explicit queueing modes:
+Supervisor-generated user messages use the safest delivery path available for the current phase:
 
 - **Mid-run steering** is queued as **`steer`** so it lands after the current tool-call cycle.
-- **End-of-run steering** and **checklist prompts** are queued as **`followUp`** so they run after the just-finished agent run fully settles.
+- **End-of-run steering** and **checklist prompts** are **deferred until pi is truly idle**, then sent as plain user messages.
 - **Outcome updates** requested with `/supervisor ...` while the agent is busy are staged and applied at the next safe checkpoint.
 
-This avoids lifecycle races with newer pi runtimes and prevents `Agent is already processing` errors.
+This avoids both lifecycle races (`Agent is already processing`) and a current pi-core edge case where `followUp` messages queued from `agent_end` can remain stuck.
 
 ## Install
 
@@ -172,7 +172,7 @@ By default, each supervision run bootstraps a short completion checklist and req
 
 When you change the active outcome from the settings panel and then press **Apply & Close**, the supervisor keeps its current turn/steer statistics but automatically rebuilds the checklist for the new outcome unless you have staged a manual checklist edit/draft. Manual checklist edits and regenerate actions are also staged until **Apply & Close**. `Reset Runtime Stats` is the separate immediate action when you want to zero the counters and restart checklist progress without changing the outcome.
 
-**End-of-run** (`agent_end`): fires once per user prompt after the agent finishes its run, but before pi is fully idle. The supervisor must decide `done`, `steer`, or `continue`; any end-of-run steer is queued as a `followUp` message so it runs at the next safe point.
+**End-of-run** (`agent_end`): fires once per user prompt after the agent finishes its run, but before pi is fully idle. The supervisor must decide `done`, `steer`, or `continue`; any end-of-run steer is deferred until pi reports a true idle state, then sent as a normal user message.
 
 **Mid-run** (`turn_end`): fires after each LLM tool-call cycle while the agent is still working. Steering is queued as `steer`, so it lands right after the current tool-call cycle when confidence exceeds the threshold. The agent has at least 2 sub-turns to settle before mid-run checks begin.
 
