@@ -227,12 +227,28 @@ function extractToolCallDescriptors(branch: BranchEntry[]): Map<string, ToolCall
 }
 
 function mapToolEvidenceKind(summary: string): LessonToolEvidence["kind"] {
-  const lower = summary.toLowerCase();
-  if (lower.includes("tests") || lower.includes("run_tests.py")) return "test";
-  if (lower.includes("import")) return "import";
-  if (lower.includes("cli") || lower.includes("python -m") || lower.includes("entrypoint")) return "cli";
-  if (lower.includes("invalid") || lower.includes("error") || lower.startsWith("err ")) return "error";
-  if (lower.includes("verify") || lower.includes("line counts") || lower.includes("ok bash")) return "verification";
+  const lower = squash(summary).toLowerCase();
+
+  if (
+    /(^|[\s`])(pytest|vitest|jest|ava|mocha|tap|cargo test|go test|npm test|pnpm test|yarn test|bun test|deno test|mix test|rspec|unittest|tox|nose2|ctest|make test|make check|just test|just check)([\s`]|$)|\brun[-_ ]?tests?\b|\btest(?:s)?\.(py|sh|js|jsx|ts|tsx)\b/.test(lower)
+  ) {
+    return "test";
+  }
+
+  if (/\bimport\b|\brequire\b|\bexports?\b|public api/.test(lower)) return "import";
+
+  if (/invalid|malformed|unknown|unexpected|non-zero|exit\s*[:=]\s*[1-9]\d*|must fail|error/.test(lower) || lower.startsWith("err ")) {
+    return "error";
+  }
+
+  if (
+    /python\s+-m\s+|node\s+|deno\s+run\s+|cargo\s+run\b|go\s+run\b|npm\s+run\b|pnpm\s+run\b|yarn\s+|bun\s+run\b|uv\s+run\b|poetry\s+run\b|pipx\s+run\b|java\s+-jar\b|dotnet\s+run\b|php\s+\S|ruby\s+\S|perl\s+\S|bash\s+`\.?\/\S+|sh\s+\S|zsh\s+\S|fish\s+\S|pwsh\b|powershell\b|cmd\s+\/c\b|npx\b|pnpx\b|docker\s+(run|exec)\b|kubectl\s+exec\b|make\s+(run|start|demo|serve)\b|just\s+(run|start|demo|serve)\b|`\.?\/\S+|\bcli\b|\bentrypoint\b|\bentry point\b/.test(lower)
+  ) {
+    return "cli";
+  }
+
+  if (/verify|verification|line counts?|line-count|wc -l|check\b|inspect\b|assert\b/.test(lower)) return "verification";
+
   return "other";
 }
 
@@ -301,7 +317,10 @@ export function inferLessonPatterns(bundle: Pick<LessonEvidenceBundle, "interven
     if (condition && !patterns.includes(text)) patterns.push(text);
   };
 
-  maybeAdd(/cli|entrypoint|python -m/.test(joined), "Real external entrypoint verification appears high-signal for this project.");
+  maybeAdd(
+    /\bcli\b|\bentrypoint\b|\bentry point\b|python -m|npm run|pnpm run|yarn |bun run|deno run|cargo run|go run|uv run|poetry run|pipx run|java -jar|dotnet run|docker (run|exec)|kubectl exec|make (run|start|demo|serve)|just (run|start|demo|serve)|bash `?\.\/\S+|sh `?\.\/\S+|zsh `?\.\/\S+|\.\/\S+/.test(joined),
+    "Real external execution-surface verification appears high-signal for this project.",
+  );
   maybeAdd(/import|public api|package surface|exports?/.test(joined), "Public API / import-surface verification appears important for this project.");
   maybeAdd(/invalid|malformed|unknown op|non-zero|error/.test(joined), "Operation-specific negative-case verification appears important for this project.");
   maybeAdd(/wrapper|top-level|output shape|schema|field placement|field names/.test(joined), "Exact externally visible shapes and field names appear high-signal, but only when supported by explicit evidence.");

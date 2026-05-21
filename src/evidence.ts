@@ -27,7 +27,6 @@ export interface SupervisorEvidenceItem {
   wrapperKey?: "result" | "data" | "output";
   maxLineCount?: number;
   lineCounts?: LineCountEntry[];
-  suspiciousSchemaKeys?: string[];
 }
 
 export interface EvidencePromptSummary {
@@ -52,7 +51,6 @@ const MAX_NOTE_EVIDENCE = 4;
 const MAX_NOTE_CONTENT = 220;
 const TOP_LEVEL_WRAPPER_RE = /^\s*\{\s*"(result|data|output)"\s*:/;
 const LINE_COUNT_RE = /^\s*(\d+)\s+(.+?)\s*$/gm;
-const SUSPICIOUS_SCHEMA_KEY_RE = /"(cursor_line|cursor_col|cursor_idx|cursor_index|languages)"/g;
 
 export interface SupervisorEvidenceSnapshot {
   items: SupervisorEvidenceItem[];
@@ -127,38 +125,29 @@ function detectLineCountEvidence(
   };
 }
 
-function detectSuspiciousSchemaKeys(text: string): string[] {
-  SUSPICIOUS_SCHEMA_KEY_RE.lastIndex = 0;
-  const keys = new Set<string>();
-  for (const match of text.matchAll(SUSPICIOUS_SCHEMA_KEY_RE)) {
-    if (match[1]) keys.add(match[1]);
-  }
-  return [...keys];
-}
-
 function classifyBashCommand(command: string, excerpt: string): EvidenceCategory {
-  const lower = `${command}\n${excerpt}`.toLowerCase();
+  const lower = squash(`${command}\n${excerpt}`).toLowerCase();
 
   if (
-    /(^|\s)(pytest|vitest|jest|cargo test|go test|npm test|pnpm test|yarn test|run_tests\.py|unittest|rspec|mix test)(\s|$)/.test(lower)
+    /(^|\s)(pytest|vitest|jest|ava|mocha|tap|cargo test|go test|npm test|pnpm test|yarn test|bun test|deno test|mix test|rspec|unittest|tox|nose2|ctest|make test|make check|just test|just check)(\s|$)|\brun[-_ ]?tests?\b|\btest(?:s)?\.(py|sh|js|jsx|ts|tsx)\b/.test(lower)
   ) {
     return "tests";
   }
 
   if (
-    /python\s+-c\s+.*\bimport\b|python\s+-c\s+.*\bfrom\b.+\bimport\b|node\s+-e\s+.*\brequire\(|node\s+-e\s+.*\bimport\s|ruby\s+-e\s+.*\brequire\b/.test(lower)
+    /python\s+-c\s+.*\bimport\b|python\s+-c\s+.*\bfrom\b.+\bimport\b|node\s+-e\s+.*\brequire\(|node\s+-e\s+.*\bimport\s|bun\s+-e\s+.*\bimport\s|deno\s+eval\s+.*\bimport\s|ruby\s+-e\s+.*\brequire\b|php\s+-r\s+.*\b(require|include)(_once)?\b|perl\s+-e\s+.*\b(use|require)\b/.test(lower)
   ) {
     return "imports";
   }
 
   if (
-    /invalid|malformed|unknown|bogus|non-zero|exit\s*[:=]\s*1|should fail|expect.*fail|error case|bad timestamp|missing close/.test(lower)
+    /invalid|malformed|unknown|unexpected|bogus|non-zero|exit\s*[:=]\s*[1-9]\d*|should fail|expect(?:ed)? .*fail|error case|must fail|bad (input|request|payload|timestamp)|missing (close|field|argument)/.test(lower)
   ) {
     return "invalid";
   }
 
   if (
-    /python\s+-m\s+|node\s+|deno\s+run\s+|cargo\s+run\b|go\s+run\b|npm\s+run\b|pnpm\s+run\b|yarn\s+|\bcli\b|\bentrypoint\b/.test(lower)
+    /python\s+-m\s+|node\s+|deno\s+run\s+|cargo\s+run\b|go\s+run\b|npm\s+run\b|pnpm\s+run\b|yarn\s+|bun\s+run\b|uv\s+run\b|poetry\s+run\b|pipx\s+run\b|java\s+-jar\b|dotnet\s+run\b|php\s+\S|ruby\s+\S|perl\s+\S|bash\s+\S|sh\s+\S|zsh\s+\S|fish\s+\S|pwsh\b|powershell\b|cmd\s+\/c\b|npx\b|pnpx\b|docker\s+(run|exec)\b|kubectl\s+exec\b|make\s+(run|start|demo|serve)\b|just\s+(run|start|demo|serve)\b|(^|\s)\.\/?\S+\.(sh|py|js|ts|tsx|mjs|cjs)(\s|$)|(^|\s)\.\/\S+(\s|$)|\bcli\b|\bentrypoint\b|\bentry point\b/.test(lower)
   ) {
     return "cli";
   }
@@ -180,7 +169,6 @@ export function buildEvidenceItem(
     const category = classifyBashCommand(command, excerpt);
     const wrapperKey = category === "cli" ? detectTopLevelWrapper(rawText) : null;
     const lineCountEvidence = detectLineCountEvidence(command, rawText);
-    const suspiciousSchemaKeys = category === "cli" ? detectSuspiciousSchemaKeys(rawText) : [];
     return {
       toolName,
       category,
@@ -188,7 +176,6 @@ export function buildEvidenceItem(
       wrapperKey: wrapperKey ?? undefined,
       maxLineCount: lineCountEvidence.maxLineCount,
       lineCounts: lineCountEvidence.lineCounts,
-      suspiciousSchemaKeys: suspiciousSchemaKeys.length > 0 ? suspiciousSchemaKeys : undefined,
       summary: `${isError ? "ERR" : "OK"} bash \`${truncate(squash(command), MAX_SUMMARY_LEN)}\`${excerpt ? ` → ${excerpt}` : ""}`,
     };
   }
@@ -257,8 +244,7 @@ function isEvidenceItem(value: unknown): value is SupervisorEvidenceItem {
     typeof item.isError === "boolean" &&
     (item.wrapperKey === undefined || item.wrapperKey === "result" || item.wrapperKey === "data" || item.wrapperKey === "output") &&
     (item.maxLineCount === undefined || typeof item.maxLineCount === "number") &&
-    (item.lineCounts === undefined || (Array.isArray(item.lineCounts) && item.lineCounts.every((value) => typeof value === "object" && value !== null && typeof (value as Record<string, unknown>).path === "string" && typeof (value as Record<string, unknown>).count === "number"))) &&
-    (item.suspiciousSchemaKeys === undefined || (Array.isArray(item.suspiciousSchemaKeys) && item.suspiciousSchemaKeys.every((value) => typeof value === "string")))
+    (item.lineCounts === undefined || (Array.isArray(item.lineCounts) && item.lineCounts.every((value) => typeof value === "object" && value !== null && typeof (value as Record<string, unknown>).path === "string" && typeof (value as Record<string, unknown>).count === "number")))
   );
 }
 
@@ -325,9 +311,9 @@ function hasAssistantClaim(snapshot: ConversationMessage[], pattern: RegExp): bo
   return snapshot.some((message) => message.role === "assistant" && pattern.test(message.content.toLowerCase()));
 }
 
-function outcomeNeedsImportVerification(outcome: string): boolean {
+function outcomeNeedsPublicApiVerification(outcome: string): boolean {
   const lower = outcome.toLowerCase();
-  return /public function|public functions|exports?|imports?|entry point|package mode|python -m|supported cli operations/.test(lower);
+  return /public api|public function|public functions|exports?|imports?|module surface|package surface/.test(lower);
 }
 
 function outcomeNeedsCliVerification(outcome: string): boolean {
@@ -338,11 +324,6 @@ function outcomeNeedsCliVerification(outcome: string): boolean {
 function outcomeNeedsInvalidVerification(outcome: string): boolean {
   const lower = outcome.toLowerCase();
   return /invalid|malformed|unknown operation|unknown operations|exit non-zero|fail cleanly/.test(lower);
-}
-
-function outcomeNeedsBroadOperationCoverage(outcome: string): boolean {
-  const lower = outcome.toLowerCase();
-  return /supported cli operations|required public functions|all seven|all 7|7 ops|7 operations|one positive request per operation/.test(lower);
 }
 
 function extractLineLimitFromOutcome(outcome: string): number | null {
@@ -358,16 +339,6 @@ function shouldApplyLineLimitToPath(outcome: string, path: string): boolean {
   return true;
 }
 
-function outcomeMentionsCursorShape(outcome: string): boolean {
-  const lower = outcome.toLowerCase();
-  return /cursor index|line, column|dirty flag|saved text/.test(lower);
-}
-
-function outcomeMentionsLanguageCounts(outcome: string): boolean {
-  const lower = outcome.toLowerCase();
-  return /language counts|discovered symbols|manifests/.test(lower);
-}
-
 export function summarizeEvidenceForPrompt(
   outcome: string,
   snapshot: ConversationMessage[],
@@ -381,18 +352,12 @@ export function summarizeEvidenceForPrompt(
   const assistantClaimsTests = hasAssistantClaim(snapshot, /tests? pass|all .*tests? pass|passed\s+\d+\/?\d*\s+tests?|\b52\/52\b|\bverified\b/);
   const assistantClaimsCli = hasAssistantClaim(snapshot, /\bcli\b|end-to-end|all .*operations|all .*ops|entrypoint|entry point/);
   const assistantClaimsDone = hasAssistantClaim(snapshot, /\ball done\b|\bfinal state\b|\bcompleted\b|\bcomplete\b/);
-  const cliEvidence = items.filter((item) => item.category === "cli");
-  const wrappedCliOutputs = cliEvidence.filter((item) => item.wrapperKey !== undefined);
   const lineLimit = extractLineLimitFromOutcome(outcome);
   const overLimitLineEntries = lineLimit === null
     ? []
     : items
         .flatMap((item) => item.lineCounts ?? [])
         .filter((entry) => shouldApplyLineLimitToPath(outcome, entry.path) && entry.count > lineLimit);
-  const cursorSchemaEvidence = cliEvidence.filter((item) =>
-    item.suspiciousSchemaKeys?.some((key) => key === "cursor_line" || key === "cursor_col" || key === "cursor_idx" || key === "cursor_index"),
-  );
-  const analyzerSchemaEvidence = cliEvidence.filter((item) => item.suspiciousSchemaKeys?.includes("languages"));
 
   if ((assistantClaimsTests || assistantClaimsDone || agentIsIdle) && outcomeNeedsCliVerification(outcome)) {
     if (categories.has("tests") && !categories.has("cli")) {
@@ -402,33 +367,13 @@ export function summarizeEvidenceForPrompt(
     }
   }
 
-  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && wrappedCliOutputs.length > 0) {
-    const keys = [...new Set(wrappedCliOutputs.map((item) => item.wrapperKey))].filter(Boolean).join(", ");
-    warnings.push(`Recent CLI/stdout examples appear wrapped in a top-level ${keys || "result"} object. If the task expects a raw list/dict/string, valid compact JSON is NOT enough — the top-level output shape is still wrong.`);
-  }
-
-  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeNeedsBroadOperationCoverage(outcome) && cliEvidence.length > 0 && cliEvidence.length < 2) {
-    warnings.push("Recent CLI verification does not yet show representative breadth across the required operation surface. Verify exact outputs on multiple representative operations, not just one successful invocation.");
-  }
-
   if ((assistantClaimsTests || assistantClaimsDone || agentIsIdle) && lineLimit !== null && overLimitLineEntries.length > 0) {
     const worst = overLimitLineEntries.slice(0, 2).map((entry) => `${entry.path} (${entry.count})`).join(", ");
     warnings.push(`Recent line-count evidence shows one or more files over the ${lineLimit}-line limit${worst ? ` (${worst})` : ""}. The outcome is not done until every required file is within the limit.`);
   }
 
-  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeMentionsCursorShape(outcome) && cursorSchemaEvidence.length > 0) {
-    const keys = [...new Set(cursorSchemaEvidence.flatMap((item) => item.suspiciousSchemaKeys ?? []))]
-      .filter((key) => key.startsWith("cursor_"))
-      .join(", ");
-    warnings.push(`Recent CLI/stdout examples use suspicious alternate cursor/state keys (${keys}). If the contract expects fields like cursor, line, and column, verify the exact external keys before saying "done".`);
-  }
-
-  if ((assistantClaimsCli || assistantClaimsDone || agentIsIdle) && outcomeMentionsLanguageCounts(outcome) && analyzerSchemaEvidence.length > 0) {
-    warnings.push("Recent CLI/stdout examples use `languages` in the external summary. If the contract/examples expect `language_counts` or a differently grouped manifest shape, verify the exact external keys before saying \"done\".");
-  }
-
-  if ((assistantClaimsDone || agentIsIdle) && outcomeNeedsImportVerification(outcome) && !categories.has("imports")) {
-    warnings.push("Outcome requires public exports/imports or package-surface verification, but no recent import/export check is visible.");
+  if ((assistantClaimsDone || agentIsIdle) && outcomeNeedsPublicApiVerification(outcome) && !categories.has("imports")) {
+    warnings.push("Outcome mentions a public API or import/export surface, but no recent public API/import verification is visible.");
   }
 
   if ((assistantClaimsDone || assistantClaimsTests || agentIsIdle) && outcomeNeedsInvalidVerification(outcome) && !categories.has("invalid")) {
@@ -449,7 +394,7 @@ function dedupeEvidenceItems(items: SupervisorEvidenceItem[], maxItems: number):
 
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;
-    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}|${item.wrapperKey ?? ""}|${item.maxLineCount ?? ""}|${(item.lineCounts ?? []).map((entry) => `${entry.path}:${entry.count}`).join(",")}|${(item.suspiciousSchemaKeys ?? []).join(",")}`;
+    const key = `${item.toolName}|${item.category}|${item.summary}|${item.isError}|${item.wrapperKey ?? ""}|${item.maxLineCount ?? ""}|${(item.lineCounts ?? []).map((entry) => `${entry.path}:${entry.count}`).join(",")}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);

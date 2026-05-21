@@ -1,6 +1,6 @@
 {
   "name": "pi-supervisor",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "A pi extension that supervises the chat and steers it towards a defined outcome",
   "author": "tintinweb",
   "license": "MIT",
@@ -46,7 +46,9 @@
     "vitest": "^4.0.18"
   },
   "pi": {
-    "extensions": ["./src/index.ts"],
+    "extensions": [
+      "./src/index.ts"
+    ],
     "video": "https://github.com/tintinweb/pi-supervisor/raw/master/media/demo.mp4",
     "image": "https://github.com/tintinweb/pi-supervisor/raw/master/media/screenshot.png"
   }

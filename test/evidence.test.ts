@@ -36,6 +36,28 @@ describe("buildEvidenceItem", () => {
     expect(item?.category).toBe("imports");
   });
 
+  it("classifies generic test runner commands as tests", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "make test" },
+      [{ type: "text", text: "ok" }],
+      false,
+    );
+
+    expect(item?.category).toBe("tests");
+  });
+
+  it("classifies generic script execution as cli evidence", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "./scripts/check-contract.sh --json" },
+      [{ type: "text", text: '{"ok":true}' }],
+      false,
+    );
+
+    expect(item?.category).toBe("cli");
+  });
+
   it("detects top-level result wrappers in CLI/stdout examples", () => {
     const item = buildEvidenceItem(
       "bash",
@@ -65,18 +87,6 @@ describe("buildEvidenceItem", () => {
     );
   });
 
-  it("captures suspicious alternate schema keys from CLI output", () => {
-    const item = buildEvidenceItem(
-      "bash",
-      { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
-      [{ type: "text", text: '{"text":"x","cursor_line":1,"cursor_col":2,"cursor_idx":3,"dirty":true,"saved_text":""}' }],
-      false,
-    );
-
-    expect(item?.suspiciousSchemaKeys).toEqual(
-      expect.arrayContaining(["cursor_line", "cursor_col", "cursor_idx"]),
-    );
-  });
 });
 
 describe("collectEvidenceFromBranch", () => {
@@ -304,10 +314,10 @@ describe("summarizeEvidenceForPrompt", () => {
     );
   });
 
-  it("warns when CLI evidence is still wrapped in a top-level result object", () => {
-    const outcome = `Required public functions must be exposed from the package.\nSupported CLI operations:\n- parse_js_window_assignment\n- parse_markdown_front_matter\n- render_markdown_front_matter\nPackage mode: python -m pet_polyglot '<json request>' must print compact JSON only.`;
+  it("does not warn about wrapper shapes automatically", () => {
+    const outcome = `CLI mode must print compact JSON only.`;
     const snapshot = [
-      { role: "assistant" as const, content: "All 7 operations work end-to-end and output compact JSON." },
+      { role: "assistant" as const, content: "The CLI works end-to-end and everything is complete." },
     ];
     const evidence = [
       buildEvidenceItem(
@@ -316,22 +326,11 @@ describe("summarizeEvidenceForPrompt", () => {
         [{ type: "text", text: '{"result":[1,2,3]}' }],
         false,
       )!,
-      buildEvidenceItem(
-        "bash",
-        { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{}}'" },
-        [{ type: "text", text: '{"result":{"metadata":{},"body":"x"}}' }],
-        false,
-      )!,
     ];
 
     const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
 
-    expect(summary.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('top-level result object'),
-        expect.stringContaining('valid compact JSON is NOT enough'),
-      ]),
-    );
+    expect(summary.warnings).toEqual([]);
   });
 
   it("warns when visible line-count evidence exceeds the limit parsed from the outcome", () => {
@@ -355,44 +354,28 @@ describe("summarizeEvidenceForPrompt", () => {
     );
   });
 
-  it("warns on suspicious alternate cursor keys when the outcome requires cursor/line/column", () => {
-    const outcome = `simulate_editor(initial_text, events)\n- Track cursor index, line, column, text, dirty flag, and saved text`;
-    const snapshot = [{ role: "assistant" as const, content: "All CLI operations work and everything is complete." }];
-    const evidence = [
-      buildEvidenceItem(
-        "bash",
-        { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
-        [{ type: "text", text: '{"text":"x","cursor_line":1,"cursor_col":2,"cursor_idx":3,"dirty":true,"saved_text":""}' }],
-        false,
-      )!,
-    ];
-
-    const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
-    expect(summary.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("alternate cursor/state keys"),
-        expect.stringContaining("cursor_line"),
-      ]),
-    );
-  });
-
-  it("warns on suspicious analyzer key drift when the outcome expects language counts", () => {
-    const outcome = `analyze_project_files(files)\n- Return a JSON-serializable summary with language counts, manifests, discovered symbols, and warnings`;
+  it("does not require public API/import evidence for CLI-only outcomes", () => {
+    const outcome = `Package mode: python -m pet_polyglot '<json request>' must print compact JSON only.\nUnknown operations and malformed JSON must exit non-zero.`;
     const snapshot = [{ role: "assistant" as const, content: "The CLI output looks good. All done." }];
     const evidence = [
       buildEvidenceItem(
         "bash",
-        { command: "python -m pet_polyglot '{\"op\":\"analyze_project_files\",\"args\":{\"files\":{}}}'" },
-        [{ type: "text", text: '{"languages":{"Python":1},"manifests":{},"symbols":{},"warnings":[]}' }],
+        { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{}}'" },
+        [{ type: "text", text: '{"ok":true}' }],
+        false,
+      )!,
+      buildEvidenceItem(
+        "bash",
+        { command: "python -m pet_polyglot 'not json' ; echo EXIT: 1" },
+        [{ type: "text", text: 'Error: Invalid JSON\nEXIT: 1' }],
         false,
       )!,
     ];
 
     const summary = summarizeEvidenceForPrompt(outcome, snapshot, evidence, true);
-    expect(summary.warnings).toEqual(
+    expect(summary.warnings).not.toEqual(
       expect.arrayContaining([
-        expect.stringContaining("`languages`"),
-        expect.stringContaining("`language_counts`"),
+        expect.stringContaining("public API/import"),
       ]),
     );
   });

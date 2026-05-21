@@ -9,6 +9,7 @@ import {
   extractEvidenceNotes,
   extractKeyToolEvidence,
   extractSupervisorSessionNotes,
+  inferLessonPatterns,
   filterLessonCandidates,
   getProjectSupervisorPromptPath,
   type LessonCandidate,
@@ -115,6 +116,78 @@ describe("lesson-learned helpers", () => {
     expect(evidence).toHaveLength(1);
     expect(evidence[0]?.kind).toBe("cli");
     expect(evidence[0]?.summary).toContain("python -m pet_polyglot");
+  });
+
+  it("classifies generic script execution evidence as cli", () => {
+    const evidence = extractKeyToolEvidence([
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-script", name: "bash", arguments: { command: "./scripts/check-contract.sh --json" } }],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-script",
+          toolName: "bash",
+          content: [{ type: "text", text: '{"ok":true}' }],
+          isError: false,
+        },
+      },
+    ] as any);
+
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.kind).toBe("cli");
+    expect(evidence[0]?.summary).toContain("./scripts/check-contract.sh");
+  });
+
+  it("classifies generic test-runner evidence as test", () => {
+    const evidence = extractKeyToolEvidence([
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-test", name: "bash", arguments: { command: "make test" } }],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-test",
+          toolName: "bash",
+          content: [{ type: "text", text: 'ok' }],
+          isError: false,
+        },
+      },
+    ] as any);
+
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.kind).toBe("test");
+    expect(evidence[0]?.summary).toContain("make test");
+  });
+
+  it("infers generic execution-surface verification patterns from script evidence", () => {
+    const patterns = inferLessonPatterns({
+      interventions: [],
+      evidenceNotes: [],
+      keyToolEvidence: [{ kind: "cli", summary: "OK bash `./scripts/check-contract.sh --json` → {\"ok\":true}" }],
+    });
+
+    expect(patterns).toContain("Real external execution-surface verification appears high-signal for this project.");
+  });
+
+  it("infers generic execution-surface verification patterns from make run style evidence", () => {
+    const patterns = inferLessonPatterns({
+      interventions: [],
+      evidenceNotes: [],
+      keyToolEvidence: [{ kind: "cli", summary: "OK bash `make run-demo` → ready" }],
+    });
+
+    expect(patterns).toContain("Real external execution-surface verification appears high-signal for this project.");
   });
 
   it("normalizes lesson candidates from fenced JSON", () => {
