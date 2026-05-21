@@ -222,6 +222,16 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
+  // Always specify queue semantics for supervisor-generated user messages.
+  // `agent_end` runs before the parent agent is fully idle, so plain
+  // `sendUserMessage()` can race with the still-active run and throw.
+  const sendSupervisorUserMessage = async (
+    message: string,
+    deliverAs: "steer" | "followUp",
+  ): Promise<void> => {
+    await pi.sendUserMessage(message, { deliverAs });
+  };
+
   const applyOutcomeUpdate = async (ctx: ExtensionContext, outcome: string): Promise<void> => {
     if (!state.isActive()) return;
 
@@ -453,7 +463,7 @@ export default function (pi: ExtensionAPI) {
       });
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("steer", state.getState()?.interventions.length));
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
-      pi.sendUserMessage(decision.message, { deliverAs: "steer" });
+      await sendSupervisorUserMessage(decision.message, "steer");
     }
   });
 
@@ -467,7 +477,7 @@ export default function (pi: ExtensionAPI) {
       if (!checklist.summaryRequested) {
         state.setChecklistSummaryRequested(true);
         const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
-        sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+        await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
         return "summary";
       }
       return "complete";
@@ -501,25 +511,27 @@ export default function (pi: ExtensionAPI) {
         if (!updated.completionChecklist?.summaryRequested) {
           state.setChecklistSummaryRequested(true);
           const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
-          sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+          await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
           return "summary";
         }
         return "complete";
       }
 
       const message = `Checklist check (${nextItem.title}): ${nextItem.verificationPrompt}`;
-      sendChecklistMessage(ctx, state.getState()!, message, `Checklist item passed; moving to next check. ${review.reasoning}`.trim());
+      await sendChecklistMessage(ctx, state.getState()!, message, `Checklist item passed; moving to next check. ${review.reasoning}`.trim());
       return "steer";
     }
 
     state.incrementCurrentChecklistAttempt();
     const message = review.message?.trim() || `Checklist check (${item.title}): ${item.verificationPrompt}`;
-    sendChecklistMessage(ctx, state.getState()!, message, review.reasoning || `Checklist item requires more verification: ${item.title}`);
+    await sendChecklistMessage(ctx, state.getState()!, message, review.reasoning || `Checklist item requires more verification: ${item.title}`);
     return "steer";
   };
 
   // ---- After each agent run: analyze + steer ----
-  // agent_end fires once per user prompt, always with the agent idle and waiting for input.
+  // agent_end fires once per user prompt after the agent has finished its work for
+  // that run, but before the runtime is fully idle. Queue any supervisor reply as a
+  // follow-up instead of sending it immediately.
   // This is the critical checkpoint for all sensitivity levels.
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -571,7 +583,7 @@ export default function (pi: ExtensionAPI) {
       const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
       emitEvidenceNote(note);
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
-      pi.sendUserMessage(decision.message);
+      await sendSupervisorUserMessage(decision.message, "followUp");
     } else if (decision.action === "done") {
       const checklistResult = await runChecklistGate(ctx, s);
       if (checklistResult === "steer" || checklistResult === "summary") {
@@ -929,7 +941,7 @@ export default function (pi: ExtensionAPI) {
     return checklist.items[checklist.currentIndex] ?? null;
   };
 
-  const sendChecklistMessage = (
+  const sendChecklistMessage = async (
     ctx: ExtensionContext,
     s: NonNullable<ReturnType<typeof state.getState>>,
     message: string,
@@ -947,7 +959,7 @@ export default function (pi: ExtensionAPI) {
     const note = buildEvidenceNote(s.outcome, buildSnapshot(ctx, resolvedSensitivity.messageLimit), evidence.getRecent(), true);
     emitEvidenceNote(note);
     updateUI(ctx, state.getState(), { type: "steering", message });
-    pi.sendUserMessage(message);
+    await sendSupervisorUserMessage(message, "followUp");
   };
 
   const bootstrapCompletionChecklist = async (
