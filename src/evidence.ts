@@ -1,4 +1,4 @@
-import type { ExtensionContext, ToolResultEvent } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { ConversationMessage } from "./types.js";
 
 const SUPERVISOR_EVIDENCE_ENTRY_TYPE = "supervisor-evidence";

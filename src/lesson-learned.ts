@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildSessionContext, convertToLlm, type ExtensionContext, serializeConversation } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, convertToLlm, type ExtensionContext, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { buildEvidenceItem } from "./evidence.js";
 import { callModel } from "./model-client.js";
 

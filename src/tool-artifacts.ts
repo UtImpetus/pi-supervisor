@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionContext, ToolResultEvent } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
 const ARTIFACTS_DIR = "supervisor-artifacts";
 const INDEX_FILE = "index.jsonl";

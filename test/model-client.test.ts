@@ -7,7 +7,7 @@ const { createAgentSessionMock, reloadMock, appendSupervisorPayloadLogMock, load
   loaderOptions: [] as any[],
 }));
 
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: createAgentSessionMock,
   DefaultResourceLoader: class {
     constructor(opts: any) {

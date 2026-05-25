@@ -18,8 +18,8 @@
  * are still supported.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Box, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseLegacySuperviseInvocation } from "./command-routing.js";
 import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";

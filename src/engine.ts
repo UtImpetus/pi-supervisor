@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SupervisorPayloadDebugOptions } from "./debug.js";
 import type { SupervisorEvidenceItem } from "./evidence.js";
 import { summarizeEvidenceForPrompt } from "./evidence.js";

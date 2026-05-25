@@ -10,9 +10,9 @@
  * Opened via `/supervise` (no args) or `/supervise settings`.
  */
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
-import { type SettingItem, SettingsList, type SettingsListTheme } from "@mariozechner/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ModelSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { type SettingItem, SettingsList, type SettingsListTheme } from "@earendil-works/pi-tui";
 import type { CompletionChecklistItem, Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
 import { detectSensitivityPreset, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
 

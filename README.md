@@ -42,6 +42,7 @@ This avoids both lifecycle races (`Agent is already processing`) and a current p
 
 In addition to the original supervisor concept, this fork currently includes:
 
+- compatibility with the official `@earendil-works/pi-*` package namespace used by current pi releases
 - runtime outcome updates with `/supervisor <new outcome>`
 - `ultralight` plus fully custom sensitivity controls
 - an optional completion-checklist gate with staged checklist editing/regeneration
