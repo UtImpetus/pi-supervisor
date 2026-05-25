@@ -4,9 +4,11 @@ A [pi](https://pi.dev) extension that supervises the coding agent and steers it 
 
 > A supervisor as the intelligent overseer keeping the agent on track.
 
+> **Fork note:** This repository is a fork of [tintinweb/pi-supervisor](https://github.com/tintinweb/pi-supervisor). The original project provided the base extension; this fork carries additional fixes and features documented below.
+
 > **Status:** Early release.
 
-<img height="298" alt="image" src="https://github.com/tintinweb/pi-supervisor/raw/master/media/screenshot.png" />
+<img height="298" alt="image" src="https://github.com/UtImpetus/pi-supervisor/raw/master/media/screenshot.png" />
 
 
 
@@ -36,17 +38,43 @@ Supervisor-generated user messages use the safest delivery path available for th
 
 This avoids both lifecycle races (`Agent is already processing`) and a current pi-core edge case where `followUp` messages queued from `agent_end` can remain stuck.
 
+## What's Different in This Fork
+
+In addition to the original supervisor concept, this fork currently includes:
+
+- runtime outcome updates with `/supervisor <new outcome>`
+- `ultralight` plus fully custom sensitivity controls
+- an optional completion-checklist gate with staged checklist editing/regeneration
+- a richer interactive settings panel, including live outcome/checklist drafting and runtime stat resets
+- project-local supervisor lesson learning with `/supervise:lesson-learned`
+- model-specific `SUPERVISOR.md` overrides
+- safer idle-time message delivery and stronger evidence heuristics
+- compatibility/test maintenance for newer pi releases
+
 ## Install
 
-```bash
-pi install npm:pi-supervisor
-```
-
-Or load directly for development:
+This repo is a fork. If you want **this fork specifically**, install it from this repository rather than `npm:pi-supervisor`.
 
 ```bash
-pi -e ~/projects/pi-supervisor/src/index.ts
+# Install this fork globally
+pi install git:github.com/UtImpetus/pi-supervisor
+
+# Install this fork for the current project only
+pi install -l git:github.com/UtImpetus/pi-supervisor
+
+# Try it for one run without installing
+pi -e git:github.com/UtImpetus/pi-supervisor
 ```
+
+HTTPS and local-checkout installs also work:
+
+```bash
+pi install https://github.com/UtImpetus/pi-supervisor
+pi install /absolute/path/to/pi-supervisor
+pi -e /absolute/path/to/pi-supervisor
+```
+
+To pin a specific revision, append `@<tag-or-commit>` to the git/https source.
 
 ## Commands
 
@@ -374,4 +402,4 @@ src/
 
 ## License
 
-MIT — [tintinweb](https://github.com/tintinweb)
+MIT — original project by [tintinweb](https://github.com/tintinweb); this repository is a fork at [UtImpetus/pi-supervisor](https://github.com/UtImpetus/pi-supervisor).
