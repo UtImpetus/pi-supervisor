@@ -82,7 +82,7 @@ describe("status-widget", () => {
   it("line 1 contains Supervising, version, and Goal", () => {
     const lines = captureRender(makeState());
     expect(lines[0]).toContain("Supervising");
-    expect(lines[0]).toContain("v0.4.3");
+    expect(lines[0]).toContain("v0.5.1");
     expect(lines[0]).toContain("Goal:");
     expect(lines[0]).toContain("Refactor auth module");
   });
@@ -219,6 +219,13 @@ describe("status-widget", () => {
 
     updateUI(ctx, makeState());
     expect(widgetCleared).toBe(true);
+  });
+
+  it("renders multiline goals on a single line", () => {
+    const lines = captureRender(makeState({ outcome: "First line\nsecond line\r\nthird line" }));
+    expect(lines[0]).toContain("First line second line third line");
+    expect(lines[0]).not.toContain("\n");
+    expect(lines[0]).not.toContain("\r");
   });
 
   it("truncates long goals", () => {

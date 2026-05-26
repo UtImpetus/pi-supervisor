@@ -50,6 +50,10 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
+function singleLine(s: string): string {
+  return s.replace(/\s*[\r\n]+\s*/g, " ").trim();
+}
+
 export function describePromptSource(source: string, modelId: string): string {
   if (source.startsWith("built-in:")) {
     return `prompt: ${source.slice("built-in:".length)}`;
@@ -108,7 +112,7 @@ export function updateUI(
     const header = `${theme.fg("accent", "◉")} ${theme.fg("accent", "Supervising")} ${theme.fg("dim", SUPERVISOR_VERSION_LABEL)}`;
     // Goal label + value
     const goalLabel = theme.fg("dim", "Goal:");
-    const goalText  = theme.fg("muted", `"${truncate(snap.outcome, MAX_OUTCOME_DISPLAY)}"`);
+    const goalText  = theme.fg("muted", `"${truncate(singleLine(snap.outcome), MAX_OUTCOME_DISPLAY)}"`);
     const goal      = `${goalLabel} ${goalText}`;
     // Model
     const model = theme.fg("dim", snap.modelId);
