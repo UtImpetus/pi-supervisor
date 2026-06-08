@@ -380,6 +380,56 @@ describe("SupervisorStateManager", () => {
     expect(pi.appendEntry).toHaveBeenCalledTimes(2);
   });
 
+  it("stores and persists enabled predefined checks", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.setEnabledPredefinedChecks(["docs-sync", "code-smells"]);
+    expect(mgr.getPreferences().enabledPredefinedChecks).toEqual(["docs-sync", "code-smells"]);
+    expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+    expect(pi.appendEntry).toHaveBeenCalledWith("supervisor-preferences", expect.objectContaining({
+      enabledPredefinedChecks: ["docs-sync", "code-smells"],
+    }));
+
+    mgr.start("goal", "anthropic", "model", "medium");
+    pi.appendEntry.mockClear();
+
+    mgr.setEnabledPredefinedChecks(["critical-review"]);
+    expect(mgr.getState()?.enabledPredefinedChecks).toEqual(["critical-review"]);
+    expect(mgr.getPreferences().enabledPredefinedChecks).toEqual(["critical-review"]);
+    expect(pi.appendEntry).toHaveBeenCalledTimes(2);
+    expect(pi.appendEntry).toHaveBeenNthCalledWith(1, "supervisor-preferences", expect.objectContaining({
+      enabledPredefinedChecks: ["critical-review"],
+    }));
+    expect(pi.appendEntry).toHaveBeenNthCalledWith(2, "supervisor-state", expect.objectContaining({
+      enabledPredefinedChecks: ["critical-review"],
+    }));
+  });
+
+  it("setEnabledPredefinedChecks is a no-op when no state", () => {
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.setEnabledPredefinedChecks(["docs-sync"]);
+    expect(mgr.getPreferences().enabledPredefinedChecks).toEqual(["docs-sync"]);
+    expect(mgr.getState()).toBeNull();
+  });
+
+  it("setEnabledPredefinedChecks filters out invalid IDs", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pi = makePi();
+    const mgr = new SupervisorStateManager(pi);
+
+    mgr.setEnabledPredefinedChecks(["docs-sync", "bogus" as any, "code-smells"]);
+    expect(mgr.getPreferences().enabledPredefinedChecks).toEqual(["docs-sync", "code-smells"]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("setEnabledPredefinedChecks"),
+      expect.arrayContaining(["bogus"]),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("can update the outcome without resetting runtime stats", () => {
     const pi = makePi();
     const mgr = new SupervisorStateManager(pi);

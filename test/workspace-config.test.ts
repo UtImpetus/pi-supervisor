@@ -85,6 +85,51 @@ describe("workspace-config", () => {
       writeFileSync(join(cwd, ".pi", "supervisor-config.json"), "{ not json");
       expect(loadWorkspaceConfig(cwd)).toBeNull();
     });
+
+    it("loads enabledPredefinedChecks when valid", () => {
+      mkdirSync(join(cwd, ".pi"));
+      writeFileSync(
+        join(cwd, ".pi", "supervisor-config.json"),
+        JSON.stringify({
+          sensitivity: "medium",
+          enabledPredefinedChecks: ["docs-sync", "critical-review"],
+        }),
+      );
+
+      expect(loadWorkspaceConfig(cwd)).toEqual({
+        sensitivity: "medium",
+        enabledPredefinedChecks: ["docs-sync", "critical-review"],
+      });
+    });
+
+    it("filters invalid predefined check IDs", () => {
+      mkdirSync(join(cwd, ".pi"));
+      writeFileSync(
+        join(cwd, ".pi", "supervisor-config.json"),
+        JSON.stringify({
+          enabledPredefinedChecks: ["docs-sync", "invalid", "code-smells", 42],
+        }),
+      );
+
+      expect(loadWorkspaceConfig(cwd)).toEqual({
+        enabledPredefinedChecks: ["docs-sync", "code-smells"],
+      });
+    });
+
+    it("drops enabledPredefinedChecks when empty array", () => {
+      mkdirSync(join(cwd, ".pi"));
+      writeFileSync(
+        join(cwd, ".pi", "supervisor-config.json"),
+        JSON.stringify({
+          sensitivity: "medium",
+          enabledPredefinedChecks: [],
+        }),
+      );
+
+      expect(loadWorkspaceConfig(cwd)).toEqual({
+        sensitivity: "medium",
+      });
+    });
   });
 
   describe("loadWorkspaceModel", () => {
@@ -155,6 +200,31 @@ describe("workspace-config", () => {
         widgetVisible: true,
         debugPayloads: true,
       });
+    });
+
+    it("saves enabledPredefinedChecks and filters empties", () => {
+      mkdirSync(join(cwd, ".pi"));
+      expect(saveWorkspaceConfig(cwd, { enabledPredefinedChecks: ["docs-sync", "code-smells"] })).toBe(true);
+
+      const written = readFileSync(join(cwd, ".pi", "supervisor-config.json"), "utf-8");
+      expect(JSON.parse(written)).toEqual({ enabledPredefinedChecks: ["docs-sync", "code-smells"] });
+
+      // Empty array should be stripped
+      expect(saveWorkspaceConfig(cwd, { enabledPredefinedChecks: [] })).toBe(true);
+      const written2 = readFileSync(join(cwd, ".pi", "supervisor-config.json"), "utf-8");
+      expect(JSON.parse(written2)).toEqual({});
+    });
+
+    it("strips enabledPredefinedChecks with invalid entries", () => {
+      mkdirSync(join(cwd, ".pi"));
+      writeFileSync(
+        join(cwd, ".pi", "supervisor-config.json"),
+        JSON.stringify({ enabledPredefinedChecks: ["docs-sync"] }),
+      );
+
+      expect(saveWorkspaceConfig(cwd, { enabledPredefinedChecks: ["bad-id"] })).toBe(true);
+      const written = readFileSync(join(cwd, ".pi", "supervisor-config.json"), "utf-8");
+      expect(JSON.parse(written)).toEqual({});
     });
   });
 

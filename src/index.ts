@@ -23,7 +23,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseLegacySuperviseInvocation } from "./command-routing.js";
 import { getSupervisorPayloadLogPath, type SupervisorPayloadDebugOptions } from "./debug.js";
-import { analyze, buildSnapshot, generateCompletionChecklist, loadBuiltinSystemPrompt, loadSystemPrompt, reviewChecklistItem } from "./engine.js";
+import { analyze, buildSnapshot, generateCompletionChecklist, loadBuiltinSystemPrompt, loadSystemPrompt, mergePredefinedChecks, reviewChecklistItem } from "./engine.js";
 import {
   buildEvidenceNote,
   findLastEvidenceNoteContent,
@@ -42,8 +42,8 @@ import {
 } from "./lesson-learned.js";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, DEFAULT_SENSITIVITY, SupervisorStateManager } from "./state.js";
 import { deriveArtifactSearchTerms, SessionToolArtifactStore } from "./tool-artifacts.js";
-import type { CompletionChecklistItem, Sensitivity, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
-import { resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
+import type { CompletionChecklistItem, PredefinedCheckId, Sensitivity, SensitivityConfig, SteeringDecision, SupervisorState } from "./types.js";
+import { PREDEFINED_CHECKS, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "./types.js";
 import { pickModel } from "./ui/model-picker.js";
 import { openSettings, type SettingsResult } from "./ui/settings-panel.js";
 import { setWidgetVisible, toggleWidget, updateUI } from "./ui/status-widget.js";
@@ -152,6 +152,9 @@ export default function (pi: ExtensionAPI) {
     const checklistEnabled = s?.active
       ? s.checklistEnabled !== false
       : preferences.checklistEnabled ?? workspaceConfig?.checklistEnabled ?? true;
+    const enabledPredefinedChecks: PredefinedCheckId[] = s?.active
+      ? s.enabledPredefinedChecks ?? []
+      : preferences.enabledPredefinedChecks ?? workspaceConfig?.enabledPredefinedChecks ?? [];
 
     return {
       provider: s?.active
@@ -163,6 +166,7 @@ export default function (pi: ExtensionAPI) {
       sensitivity,
       sensitivityConfig: resolveSensitivityConfig(sensitivity, sensitivityConfig),
       checklistEnabled,
+      enabledPredefinedChecks,
       widgetVisible: preferences.widgetVisible ?? workspaceConfig?.widgetVisible ?? true,
       debugPayloads: preferences.debugPayloads ?? workspaceConfig?.debugPayloads ?? false,
     };
@@ -343,6 +347,32 @@ export default function (pi: ExtensionAPI) {
       }
       ctx.ui.notify(
         `Supervisor completion checklist ${result.checklistEnabled ? "enabled" : "disabled"}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
+          (saved ? " · saved to .pi/" : ""),
+        "info"
+      );
+    }
+
+    if (result.enabledPredefinedChecks !== undefined) {
+      state.setEnabledPredefinedChecks(result.enabledPredefinedChecks);
+      const saved = saveWorkspaceConfig(ctx.cwd, { enabledPredefinedChecks: result.enabledPredefinedChecks });
+      if (state.isActive() && !outcomeChanged && !hasManualChecklistDraft && !result.resetStats) {
+        const activeState = state.getState();
+        if (activeState?.completionChecklist) {
+          // Re-merge without re-calling the LLM: keep existing bootstrap items
+          // (with their review status) and swap in the new predefined tail.
+          const knownIds = new Set(PREDEFINED_CHECKS.map((c) => c.id));
+          const bootstrapItems = activeState.completionChecklist.items
+            .filter((i) => !knownIds.has(i.id));
+          const remerged = mergePredefinedChecks(bootstrapItems, result.enabledPredefinedChecks);
+          if (remerged.length > 0) {
+            state.setCompletionChecklist(remerged);
+            if (ctx.hasUI) updateUI(ctx, state.getState());
+          }
+        }
+      }
+      const count = result.enabledPredefinedChecks.length;
+      ctx.ui.notify(
+        `Supervisor predefined checks ${count > 0 ? `set (${count})` : "cleared"}${state.isActive() ? "" : " (takes effect on next /supervise)"}` +
           (saved ? " · saved to .pi/" : ""),
         "info"
       );
@@ -658,6 +688,7 @@ export default function (pi: ExtensionAPI) {
       sensitivity: draft.sensitivity ?? defaults.sensitivity,
       sensitivityConfig: draft.sensitivityConfig ?? defaults.sensitivityConfig,
       checklistEnabled: draft.checklistEnabled ?? defaults.checklistEnabled,
+      enabledPredefinedChecks: draft.enabledPredefinedChecks ?? defaults.enabledPredefinedChecks,
       widgetVisible: draft.widget ?? defaults.widgetVisible,
       debugPayloads: draft.debugPayloads ?? defaults.debugPayloads,
     };
@@ -671,6 +702,7 @@ export default function (pi: ExtensionAPI) {
           sensitivity: draft.sensitivity ?? liveState.sensitivity,
           sensitivityConfig: draft.sensitivityConfig ?? liveState.sensitivityConfig,
           checklistEnabled: draft.checklistEnabled ?? liveState.checklistEnabled,
+          enabledPredefinedChecks: draft.enabledPredefinedChecks ?? liveState.enabledPredefinedChecks,
           outcome: draft.outcome ?? liveState.outcome,
           completionChecklist: draft.checklistItems !== undefined
             ? {
@@ -1039,8 +1071,12 @@ export default function (pi: ExtensionAPI) {
 
     try {
       const checklistItems = await generateCompletionChecklist(ctx, provider, modelId, outcome, getDebugOptions(ctx));
-      if (checklistItems.length > 0) {
-        state.setCompletionChecklist(checklistItems);
+      const mergedItems = mergePredefinedChecks(
+        checklistItems,
+        state.getState()?.enabledPredefinedChecks,
+      );
+      if (mergedItems.length > 0) {
+        state.setCompletionChecklist(mergedItems);
         if (shouldRenderUI) updateUI(ctx, state.getState());
         return getChecklistLabel(state.getState());
       }
@@ -1074,7 +1110,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const sensitivityConfig = resolveSensitivityConfig(sensitivity, defaults.sensitivityConfig);
-    state.start(outcome, provider, modelId, sensitivity, sensitivityConfig, defaults.checklistEnabled);
+    state.start(outcome, provider, modelId, sensitivity, sensitivityConfig, defaults.checklistEnabled, defaults.enabledPredefinedChecks);
     idleSteers = 0;
     resetRunEvidence();
     labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));
@@ -1263,7 +1299,7 @@ export default function (pi: ExtensionAPI) {
         modelId = defaults.modelId;
       }
 
-      state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig, checklistEnabled);
+      state.start(params.outcome, provider, modelId, sensitivity, resolvedConfig, checklistEnabled, defaults.enabledPredefinedChecks);
       idleSteers = 0;
       resetRunEvidence();
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("start"));

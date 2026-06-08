@@ -13,8 +13,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ModelSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type SettingItem, SettingsList, type SettingsListTheme } from "@earendil-works/pi-tui";
-import type { CompletionChecklistItem, Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
-import { detectSensitivityPreset, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
+import type { CompletionChecklistItem, PredefinedCheckId, Sensitivity, SensitivityConfig, SupervisorState } from "../types.js";
+import { detectSensitivityPreset, PREDEFINED_CHECKS, resolveSensitivityConfig, SENSITIVITY_PRESETS } from "../types.js";
 
 const SENSITIVITIES: Sensitivity[] = ["ultralight", "low", "medium", "high", "custom"];
 
@@ -43,6 +43,7 @@ export interface SettingsDefaults {
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled: boolean;
+  enabledPredefinedChecks: PredefinedCheckId[];
   widgetVisible: boolean;
   debugPayloads?: boolean;
 }
@@ -52,6 +53,7 @@ export interface SettingsResult {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled?: boolean;
+  enabledPredefinedChecks?: PredefinedCheckId[];
   outcome?: string;
   checklistItems?: Array<Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">>;
   resetStats?: boolean;
@@ -65,6 +67,7 @@ export function hasSettingsDraftChanges(draft: SettingsResult): boolean {
     draft.model !== undefined ||
     draft.sensitivity !== undefined ||
     draft.checklistEnabled !== undefined ||
+    draft.enabledPredefinedChecks !== undefined ||
     draft.outcome !== undefined ||
     draft.checklistItems !== undefined ||
     draft.resetStats !== undefined ||
@@ -88,16 +91,19 @@ export async function openSettings(
   const currentSensitivity = state?.sensitivity ?? defaults.sensitivity;
   const currentConfig = resolveSensitivityConfig(currentSensitivity, state?.sensitivityConfig ?? defaults.sensitivityConfig);
   const currentChecklistEnabled = state?.checklistEnabled ?? defaults.checklistEnabled;
+  const currentEnabledChecks: PredefinedCheckId[] = state?.active
+    ? state.enabledPredefinedChecks ?? defaults.enabledPredefinedChecks
+    : defaults.enabledPredefinedChecks;
   const currentWidgetVisible = defaults.widgetVisible;
   const currentDebugPayloads = defaults.debugPayloads ?? false;
   const isActive = state?.active === true;
 
   // Mutable draft state
+  const draft: SettingsResult = { ...initialDraft };
   let draftSensitivity: Sensitivity = currentSensitivity;
   let draftConfig: SensitivityConfig = { ...currentConfig };
   let draftSensitivityConfig: SensitivityConfig | undefined = currentSensitivity === "custom" ? { ...currentConfig } : undefined;
-
-  const draft: SettingsResult = { ...initialDraft };
+  const draftEnabledChecks = new Set<PredefinedCheckId>(draft.enabledPredefinedChecks ?? currentEnabledChecks);
 
   return ctx.ui.custom<SettingsResult | null>((tui, theme, _kb, done) => {
     const submit = (action?: SettingsResult["action"]) => {
@@ -196,6 +202,13 @@ export async function openSettings(
         currentValue: currentChecklistEnabled ? "enabled" : "disabled",
         values: ["enabled", "disabled"],
       },
+      ...PREDEFINED_CHECKS.map((check): SettingItem => ({
+        id: `predefined-${check.id}`,
+        label: `    ${check.title}`,
+        description: check.description,
+        currentValue: draftEnabledChecks.has(check.id) ? "on" : "off",
+        values: ["on", "off"],
+      })),
       {
         id: "widget",
         label: "Widget",
@@ -374,6 +387,17 @@ export async function openSettings(
           draft.widget = newValue === "visible";
         } else if (id === "debugPayloads") {
           draft.debugPayloads = newValue === "enabled";
+        } else if (id.startsWith("predefined-")) {
+          const checkId = id.replace("predefined-", "") as PredefinedCheckId;
+          const enabled = newValue === "on";
+          if (enabled) {
+            draftEnabledChecks.add(checkId);
+          } else {
+            draftEnabledChecks.delete(checkId);
+          }
+          draft.enabledPredefinedChecks = Array.from(draftEnabledChecks);
+          settingsList.updateValue(id, enabled ? "on" : "off");
+          settingsList.invalidate();
         } else if (id === "apply" && newValue === "apply") {
           submit();
         } else if (id === "cancel" && newValue === "discard") {

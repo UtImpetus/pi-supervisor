@@ -16,6 +16,11 @@ describe("hasSettingsDraftChanges", () => {
     expect(hasSettingsDraftChanges({ checklistEnabled: false })).toBe(true);
   });
 
+  it("treats enabledPredefinedChecks as a real draft change", () => {
+    expect(hasSettingsDraftChanges({ enabledPredefinedChecks: [] })).toBe(true);
+    expect(hasSettingsDraftChanges({ enabledPredefinedChecks: ["docs-sync"] })).toBe(true);
+  });
+
   it("treats outcome edits, checklist edits, and stat resets as real draft changes", () => {
     expect(hasSettingsDraftChanges({ outcome: "new goal" })).toBe(true);
     expect(hasSettingsDraftChanges({ checklistItems: [{ id: "check-1", title: "Check", description: "Desc", verificationPrompt: "Verify" }] })).toBe(true);

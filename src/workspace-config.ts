@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Sensitivity, SensitivityConfig } from "./types.js";
+import type { PredefinedCheckId, Sensitivity, SensitivityConfig } from "./types.js";
 
 const PI_DIR = ".pi";
 const CONFIG_FILE = "supervisor-config.json";
@@ -21,8 +21,13 @@ export interface WorkspaceSupervisorConfig {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled?: boolean;
+  enabledPredefinedChecks?: PredefinedCheckId[];
   widgetVisible?: boolean;
   debugPayloads?: boolean;
+}
+
+function isPredefinedCheckId(value: unknown): value is PredefinedCheckId {
+  return value === "docs-sync" || value === "critical-review" || value === "code-smells";
 }
 
 function isSensitivity(value: unknown): value is Sensitivity {
@@ -62,6 +67,21 @@ export function loadWorkspaceConfig(cwd: string): WorkspaceSupervisorConfig | nu
 
     if (typeof parsed.checklistEnabled === "boolean") {
       config.checklistEnabled = parsed.checklistEnabled;
+    }
+
+    if (Array.isArray(parsed.enabledPredefinedChecks)) {
+      const raw = parsed.enabledPredefinedChecks;
+      const checks = raw.filter(isPredefinedCheckId);
+      if (checks.length > 0) {
+        config.enabledPredefinedChecks = checks;
+      }
+      const dropped = raw.length - checks.length;
+      if (dropped > 0) {
+        console.warn(
+          `[pi-supervisor] config: dropped ${dropped} invalid predefined check ID(s) from ${configPath}:`,
+          raw.filter((v: unknown) => !isPredefinedCheckId(v)),
+        );
+      }
     }
 
     if (typeof parsed.widgetVisible === "boolean") {
@@ -117,6 +137,14 @@ export function saveWorkspaceConfig(cwd: string, patch: WorkspaceSupervisorConfi
 
     if (typeof merged.checklistEnabled !== "boolean") {
       delete merged.checklistEnabled;
+    }
+
+    if (
+      !Array.isArray(merged.enabledPredefinedChecks) ||
+      merged.enabledPredefinedChecks.length === 0 ||
+      !merged.enabledPredefinedChecks.every(isPredefinedCheckId)
+    ) {
+      delete merged.enabledPredefinedChecks;
     }
 
     if (typeof merged.widgetVisible !== "boolean") {

@@ -25,11 +25,12 @@ import type {
   ChecklistReviewDecision,
   CompletionChecklistItem,
   ConversationMessage,
+  PredefinedCheckId,
   SensitivityConfig,
   SteeringDecision,
   SupervisorState,
 } from "./types.js";
-import { resolveSensitivityConfig } from "./types.js";
+import { PREDEFINED_CHECKS, resolveSensitivityConfig } from "./types.js";
 
 // ---- System prompt loading ----
 
@@ -525,6 +526,35 @@ function parseChecklistResponse(text: string): CompletionChecklistItem[] {
 export function formatChecklistForPrompt(items: CompletionChecklistItem[]): string {
   if (items.length === 0) return "COMPLETION CHECKLIST:\n(None generated)";
   return `COMPLETION CHECKLIST:\n${items.map((item) => `- [${item.status}] ${item.title}: ${item.description}`).join("\n")}`;
+}
+
+/**
+ * Merge bootstrap checklist items with enabled predefined checks.
+ * Predefined checks are appended after bootstrap items so contract checks run first.
+ */
+export function mergePredefinedChecks(
+  bootstrapItems: CompletionChecklistItem[],
+  enabledIds: PredefinedCheckId[] | undefined,
+): CompletionChecklistItem[] {
+  if (!enabledIds || enabledIds.length === 0) return [...bootstrapItems];
+  const resolved = enabledIds
+    .map((id) => {
+      const check = PREDEFINED_CHECKS.find((c) => c.id === id);
+      if (!check) {
+        console.warn(`[pi-supervisor] mergePredefinedChecks: unknown predefined check ID "${id}" — skipping`);
+      }
+      return check;
+    })
+    .filter((c): c is (typeof PREDEFINED_CHECKS)[number] => c !== undefined)
+    .map((c) => ({
+      id: c.id,
+      title: c.title,
+      description: c.description,
+      verificationPrompt: c.verificationPrompt,
+      status: "pending" as const,
+      attempts: 0,
+    }));
+  return [...bootstrapItems, ...resolved];
 }
 
 export async function generateCompletionChecklist(

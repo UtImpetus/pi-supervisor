@@ -3,14 +3,16 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-  CompletionChecklist,
-  CompletionChecklistItem,
-  Sensitivity,
-  SensitivityConfig,
-  SupervisorIntervention,
-  SupervisorPreferences,
-  SupervisorState,
+import {
+  PREDEFINED_CHECKS,
+  type CompletionChecklist,
+  type CompletionChecklistItem,
+  type PredefinedCheckId,
+  type Sensitivity,
+  type SensitivityConfig,
+  type SupervisorIntervention,
+  type SupervisorPreferences,
+  type SupervisorState,
 } from "./types.js";
 
 const STATE_ENTRY_TYPE = "supervisor-state";
@@ -36,6 +38,7 @@ export class SupervisorStateManager {
     sensitivity: Sensitivity,
     sensitivityConfig?: SensitivityConfig,
     checklistEnabled = true,
+    enabledPredefinedChecks?: PredefinedCheckId[],
   ): void {
     this.state = {
       active: true,
@@ -45,6 +48,7 @@ export class SupervisorStateManager {
       sensitivity,
       sensitivityConfig,
       checklistEnabled,
+      enabledPredefinedChecks,
       pendingOutcomeUpdate: undefined,
       interventions: [],
       startedAt: Date.now(),
@@ -66,6 +70,7 @@ export class SupervisorStateManager {
       sensitivity,
       sensitivityConfig,
       checklistEnabled,
+      enabledPredefinedChecks,
     };
     this.persistPreferences();
     this.persistState();
@@ -208,6 +213,27 @@ export class SupervisorStateManager {
           items: [],
         }
       : undefined;
+    this.persistState();
+  }
+
+  static readonly #VALID_CHECK_IDS = new Set(PREDEFINED_CHECKS.map((c) => c.id));
+
+  setEnabledPredefinedChecks(checks: PredefinedCheckId[]): void {
+    const valid = checks.filter((id): id is PredefinedCheckId => SupervisorStateManager.#VALID_CHECK_IDS.has(id));
+    if (valid.length < checks.length) {
+      console.warn(
+        `[pi-supervisor] setEnabledPredefinedChecks: dropped ${checks.length - valid.length} invalid ID(s):`,
+        checks.filter((id) => !SupervisorStateManager.#VALID_CHECK_IDS.has(id)),
+      );
+    }
+    this.preferences = {
+      ...this.preferences,
+      enabledPredefinedChecks: valid,
+    };
+    this.persistPreferences();
+
+    if (!this.state) return;
+    this.state.enabledPredefinedChecks = valid;
     this.persistState();
   }
 

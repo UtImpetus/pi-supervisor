@@ -5,6 +5,45 @@
 /** Sensitivity presets and custom. */
 export type Sensitivity = "ultralight" | "low" | "medium" | "high" | "custom";
 
+/** Built-in predefined check IDs that users can opt into via settings. */
+export type PredefinedCheckId = "docs-sync" | "critical-review" | "code-smells";
+
+/** A built-in, outcome-agnostic process-hygiene checklist item. */
+export interface PredefinedCheck {
+  id: PredefinedCheckId;
+  title: string;
+  description: string;
+  verificationPrompt: string;
+}
+
+/** The canonical set of built-in predefined checks. */
+export const PREDEFINED_CHECKS: readonly PredefinedCheck[] = [
+  {
+    id: "docs-sync",
+    title: "Documentation updated",
+    description:
+      "Any user-facing changes, new APIs, or behavioral changes are reflected in README, docs, or inline comments.",
+    verificationPrompt:
+      "Verify that README, CHANGELOG, or relevant docs mention the changes you made. If you added or changed public APIs, confirm the documentation is accurate.",
+  },
+  {
+    id: "critical-review",
+    title: "Self-critique review",
+    description:
+      "Re-examine your changes for obvious errors, missed requirements, or regressions before finishing.",
+    verificationPrompt:
+      "Re-read the full diff of your changes. Check for typos, missed edge cases, unintended file modifications, and ensure the implementation matches the stated goal.",
+  },
+  {
+    id: "code-smells",
+    title: "Code quality cleanup",
+    description:
+      "Remove obvious code smells introduced or left behind: dead code, duplicated logic, unclear names, missing error handling.",
+    verificationPrompt:
+      "Scan your changes for unused variables, duplicated logic, hardcoded values, poorly named functions, and missing error handling. Clean up anything you find.",
+  },
+];
+
 /** Tunable parameters that the sensitivity presets map to. */
 export interface SensitivityConfig {
   /** How many tool-call cycles between mid-run checks. 0 = off (end-of-run only). */
@@ -116,6 +155,7 @@ export interface SupervisorState {
   sensitivity: Sensitivity;
   sensitivityConfig?: SensitivityConfig;  // present when "custom"
   checklistEnabled?: boolean;
+  enabledPredefinedChecks?: PredefinedCheckId[];
   pendingOutcomeUpdate?: { outcome: string; requestedAt: number };
   interventions: SupervisorIntervention[];
   startedAt: number;
@@ -130,6 +170,7 @@ export interface SupervisorPreferences {
   sensitivity?: Sensitivity;
   sensitivityConfig?: SensitivityConfig;
   checklistEnabled?: boolean;
+  enabledPredefinedChecks?: PredefinedCheckId[];
   widgetVisible?: boolean;
   debugPayloads?: boolean;
 }

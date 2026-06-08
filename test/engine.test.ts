@@ -10,6 +10,7 @@ import {
   findBuiltinModelPrompt,
   formatChecklistForPrompt,
   loadSystemPrompt,
+  mergePredefinedChecks,
 } from "../src/engine.js";
 
 // Build a minimal ExtensionContext that only exposes the bits engine.ts touches.
@@ -174,6 +175,53 @@ describe("formatChecklistForPrompt", () => {
     expect(section).toContain("Verify public imports");
     expect(section).toContain("[pending]");
     expect(section).toContain("[passed]");
+  });
+});
+
+describe("mergePredefinedChecks", () => {
+  it("returns bootstrap items unchanged when no predefined checks are enabled", () => {
+    const bootstrap = [
+      { id: "a", title: "A", description: "Desc A", verificationPrompt: "Verify A.", status: "pending" as const, attempts: 0 },
+      { id: "b", title: "B", description: "Desc B", verificationPrompt: "Verify B.", status: "pending" as const, attempts: 0 },
+    ];
+    expect(mergePredefinedChecks(bootstrap, undefined)).toEqual(bootstrap);
+    expect(mergePredefinedChecks(bootstrap, undefined)).not.toBe(bootstrap);
+    expect(mergePredefinedChecks(bootstrap, [])).toEqual(bootstrap);
+    expect(mergePredefinedChecks(bootstrap, [])).not.toBe(bootstrap);
+  });
+
+  it("appends a single enabled predefined check", () => {
+    const bootstrap = [{ id: "a", title: "A", description: "Desc A", verificationPrompt: "Verify A.", status: "pending" as const, attempts: 0 }];
+    const result = mergePredefinedChecks(bootstrap, ["docs-sync"]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(bootstrap[0]);
+    expect(result[1]).toMatchObject({
+      id: "docs-sync",
+      title: "Documentation updated",
+      status: "pending",
+      attempts: 0,
+    });
+  });
+
+  it("appends multiple enabled predefined checks in order", () => {
+    const bootstrap = [{ id: "a", title: "A", description: "Desc A", verificationPrompt: "Verify A.", status: "pending" as const, attempts: 0 }];
+    const result = mergePredefinedChecks(bootstrap, ["docs-sync", "code-smells"]);
+    expect(result).toHaveLength(3);
+    expect(result[1].id).toBe("docs-sync");
+    expect(result[2].id).toBe("code-smells");
+  });
+
+  it("ignores unknown predefined check IDs", () => {
+    const bootstrap = [{ id: "a", title: "A", description: "Desc A", verificationPrompt: "Verify A.", status: "pending" as const, attempts: 0 }];
+    const result = mergePredefinedChecks(bootstrap, ["docs-sync", "unknown-id" as any, "critical-review"]);
+    expect(result).toHaveLength(3);
+    expect(result.map((i) => i.id)).toEqual(["a", "docs-sync", "critical-review"]);
+  });
+
+  it("returns only predefined checks when bootstrap is empty", () => {
+    const result = mergePredefinedChecks([], ["docs-sync"]);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("docs-sync");
   });
 });
 

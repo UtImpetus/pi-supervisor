@@ -132,6 +132,10 @@ Run `/supervise` (no args) or `/supervise:settings` to open the interactive sett
     - **Message Window** — recent messages for supervisor context
   - Changing any sub-parameter auto-switches to `custom`; matching a preset snaps back to its name
 - **Completion Checklist** — enable/disable the mandatory completion checklist gate (enabled by default)
+- **Predefined Checks** — enable individual built-in hygiene checks that are appended to the bootstrap checklist:
+  - **Documentation updated** (`docs-sync`) — verify README / docs reflect public API or behavior changes
+  - **Self-critique review** (`critical-review`) — re-examine changes for obvious errors and missed requirements
+  - **Code quality cleanup** (`code-smells`) — remove dead code, duplication, unclear names, missing error handling
 - **Widget** — toggle visibility
 - **Outcome** (when active) — shows the current goal plus steer/turn stats
 - **Edit Outcome** (when active) — edit the active outcome as a draft; it applies only after **Apply & Close**
@@ -198,6 +202,16 @@ Custom settings are also available via the `/supervise:sensitivity custom` comma
 ### Completion Checklist
 
 By default, each supervision run bootstraps a short completion checklist and requires it to pass before the supervisor can finish the task. You can disable that gate from the settings panel, via saved config, or with `start_supervision.checklistEnabled` when you want a lighter workflow.
+
+In addition to the LLM-generated bootstrap items, you can opt into **predefined checks** — outcome-agnostic process-hygiene reminders that are appended after the bootstrap items:
+
+| ID | Title | What it verifies |
+|---|---|---|
+| `docs-sync` | Documentation updated | Public-facing changes are reflected in README, docs, or inline comments |
+| `critical-review` | Self-critique review | Re-examine the diff for typos, missed edge cases, and unintended modifications |
+| `code-smells` | Code quality cleanup | Remove dead code, duplicated logic, unclear names, missing error handling |
+
+Predefined checks are toggled individually in the settings panel and saved to `.pi/supervisor-config.json` alongside other preferences. When enabled, they are merged after the bootstrap items so contract checks run first.
 
 When you change the active outcome from the settings panel and then press **Apply & Close**, the supervisor keeps its current turn/steer statistics but automatically rebuilds the checklist for the new outcome unless you have staged a manual checklist edit/draft. Manual checklist edits and regenerate actions are also staged until **Apply & Close**. `Reset Runtime Stats` is the separate immediate action when you want to zero the counters and restart checklist progress without changing the outcome.
 
