@@ -32,6 +32,12 @@ import {
   SupervisorEvidenceTracker,
   summarizeEvidenceForPrompt,
 } from "./evidence.js";
+import {
+  evaluateToolCallAgainstConstraints,
+  extractHardConstraints,
+  formatActiveConstraints,
+  mergeHardConstraints,
+} from "./hard-control.js";
 import { formatSupervisorCheckpointLabel, mergeSupervisorTreeLabel } from "./labels.js";
 import {
   generateSupervisorLessonsProposal,
@@ -137,6 +143,8 @@ export default function (pi: ExtensionAPI) {
   let idleSteers = 0; // consecutive agent_end steers; reset on done/stop/new supervision
   let lastEvidenceNoteContent: string | null = null;
   let uiAvailable = false;
+  const repeatedFailureCounts = new Map<string, number>();
+  let lastRecoverySteerAt = 0;
 
   const resolveSettingsDefaults = (ctx: ExtensionContext) => {
     const s = state.getState();
@@ -196,6 +204,7 @@ export default function (pi: ExtensionAPI) {
   const resetRunEvidence = () => {
     evidence.reset();
     toolArtifacts.reset();
+    repeatedFailureCounts.clear();
     lastEvidenceNoteContent = null;
   };
 
@@ -235,6 +244,28 @@ export default function (pi: ExtensionAPI) {
 
   const sendSupervisorSteerMessage = async (message: string): Promise<void> => {
     await pi.sendUserMessage(message, { deliverAs: "steer" });
+  };
+
+  const maybeSendRecoverySteer = async (message: string): Promise<void> => {
+    const now = Date.now();
+    if (now - lastRecoverySteerAt < 2000) return;
+    lastRecoverySteerAt = now;
+    state.markRecoverySent();
+    try {
+      await sendSupervisorSteerMessage(message);
+    } catch {
+      // If the runtime cannot accept a steer right now, normal agent_end logic will still run.
+    }
+  };
+
+  const learnConstraintsFromText = (text: string, ctx: ExtensionContext): void => {
+    if (!state.isActive()) return;
+    const incoming = extractHardConstraints(text);
+    if (incoming.length === 0) return;
+    const active = state.getState();
+    const merged = mergeHardConstraints(active?.hardConstraints, incoming);
+    state.setHardConstraints(merged);
+    if (uiAvailable) ctx.ui.notify(`Supervisor learned ${incoming.length} hard constraint${incoming.length === 1 ? "" : "s"}.`, "warning");
   };
 
   // `agent_end` handlers run before the parent agent becomes truly idle.
@@ -360,7 +391,7 @@ export default function (pi: ExtensionAPI) {
         if (activeState?.completionChecklist) {
           // Re-merge without re-calling the LLM: keep existing bootstrap items
           // (with their review status) and swap in the new predefined tail.
-          const knownIds = new Set(PREDEFINED_CHECKS.map((c) => c.id));
+          const knownIds = new Set<string>(PREDEFINED_CHECKS.map((c) => c.id));
           const bootstrapItems = activeState.completionChecklist.items
             .filter((i) => !knownIds.has(i.id));
           const remerged = mergePredefinedChecks(bootstrapItems, result.enabledPredefinedChecks);
@@ -480,9 +511,60 @@ export default function (pi: ExtensionAPI) {
     clearPendingIdleSendTimers();
   });
 
+  pi.on("input", async (event: any, ctx) => {
+    const text = typeof event.text === "string" ? event.text : "";
+    learnConstraintsFromText(text, ctx);
+  });
+
+  pi.on("before_agent_start", async (event: any) => {
+    if (!state.isActive()) return;
+    const constraintsBlock = formatActiveConstraints(state.getState()?.hardConstraints);
+    if (!constraintsBlock) return;
+    return {
+      systemPrompt: `${event.systemPrompt}\n\n${constraintsBlock}`,
+      message: {
+        customType: "supervisor-hard-constraints",
+        content: constraintsBlock,
+        display: false,
+      },
+    };
+  });
+
+  pi.on("tool_call", async (event: any, ctx) => {
+    if (!state.isActive()) return;
+    const active = state.getState();
+    const decision = evaluateToolCallAgainstConstraints(
+      String(event.toolName ?? ""),
+      typeof event.input === "object" && event.input !== null ? event.input : undefined,
+      active?.hardConstraints,
+      ctx.cwd,
+    );
+    if (!decision?.block) return;
+
+    state.recordBlockedToolCall();
+    if (uiAvailable) ctx.ui.notify(decision.reason, "warning");
+    void maybeSendRecoverySteer(decision.steerMessage);
+    return { block: true, reason: decision.reason };
+  });
+
   pi.on("tool_result", async (event, ctx) => {
     if (!state.isActive()) return;
     evidence.recordToolResult(event);
+
+    if (event.isError) {
+      const input = (event as any).input as Record<string, unknown> | undefined;
+      const command = typeof input?.command === "string" ? input.command.replace(/\s+/g, " ").slice(0, 160) : String(event.toolName);
+      const count = (repeatedFailureCounts.get(command) ?? 0) + 1;
+      repeatedFailureCounts.set(command, count);
+      if (count >= 3) {
+        state.recordRepeatedFailure();
+        const constraintsBlock = formatActiveConstraints(state.getState()?.hardConstraints);
+        void maybeSendRecoverySteer(
+          `You are repeating the same failing tool/action (${count} failures): ${command}. Stop the loop. Restate the current facts, failed hypothesis, and the next single allowed action before using more tools.${constraintsBlock ? `\n\n${constraintsBlock}` : ""}`,
+        );
+      }
+    }
+
     if (!uiAvailable) return;
     toolArtifacts.recordToolResult(ctx, event);
   });

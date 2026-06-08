@@ -57,10 +57,12 @@ Rules:
 - Choose the highest-risk externally visible contract checks, not generic boilerplate. Prefer exact imports/exports, CLI/request format, output shape/schema, operation-specific invalid cases, roundtrip behavior, stateful semantics, and exact summary output.
 - Do NOT waste checklist slots on shallow checks like "function exists", "types roughly match", or "tests pass" when the outcome requires deeper semantic verification.
 - If the outcome includes stateful editors, simulators, cursor/text state, or event sequences, include a checklist item for representative multi-step transitions, invalid-event behavior, and returned state shape. Only demand exact key names/schema when they are explicit in the outcome, examples, or observed outputs; otherwise require raw output evidence instead of inventing keys.
+- If the outcome or user examples show an input schema (for example event keys like \`action\` versus \`type\`, request envelopes, HTTP payloads, config fields, or exact command input), include a checklist item that verifies the implementation accepts that exact schema or explicitly rejects/justifies the mismatch with raw output.
 - If the outcome includes analyzers, summaries, manifests, or structured reports, include a checklist item for top-level keys/schema and representative fixture outputs. Demand exact keys only when the contract or examples make them explicit. Watch for alternate schemas like list-vs-dict drift or extra regrouped keys.
 - If the outcome includes feeds, posts, replies, timestamps, ordering, or markers, include a checklist item for reply association/order semantics and invalid timestamp or malformed-marker handling.
 - If the outcome includes ANSI/terminal rendering or escape-sequence handling, include a checklist item for exact visible output, OSC/DCS skipping, malformed escape handling, and any explicitly required color/readability behavior.
 - If the outcome includes parse/render pairs or front matter, include a checklist item for roundtrip integrity using the required scalar/list/null types and another item for malformed/unclosed input behavior when failure semantics are required.
+- If the outcome includes a custom test runner or discovery requirement, include a checklist item that proves a newly added failing test is discovered and causes a non-zero exit, then restoration returns to passing.
 - Include at least one item for operation-specific invalid behavior for the riskiest public operations, not just generic malformed JSON or unknown-op handling.
 - Keep each item concrete, evidence-oriented, and runnable as a re-check.
 - Do NOT generate implementation-plan steps.
@@ -76,15 +78,23 @@ Return ONLY valid JSON with this exact shape:
   "confidence": 0.0
 }
 Rules:
-- Use "passed" only when recent evidence makes this checklist item clearly satisfied.
+- Default to skeptical. The coding assistant is often overconfident and produces shallow or self-congratulatory summaries. You are an independent auditor trying to find gaps, not a cheerleader. Err strongly on the side of "needs_work".
+- Use "passed" only when recent evidence makes this checklist item clearly satisfied with direct tool output, CLI traces, or exact raw output.
 - Use "needs_work" when evidence is missing, contradictory, incomplete, or only proves a shallow approximation.
-- Assistant claims and self-authored tests are not sufficient by themselves. Prefer direct tool evidence from real CLI output, exact JSON payloads, imports, fixture outputs, and explicit invalid-case runs.
+- Assistant claims, summary tables, and self-authored tests are not sufficient by themselves. Prefer direct tool evidence from real CLI output, exact JSON payloads, imports, fixture outputs, and explicit invalid-case runs.
+- Do not accept a summarized "verified" statement when the raw command, raw stdout/stderr, and exit code are missing for externally visible CLI/test-runner behavior.
 - Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough when the contract requires exact field names, exact keys/schema, state transitions, ordering/reply semantics, roundtrip fidelity, or operation-specific failure behavior.
-- If recent evidence suggests suspicious schema drift (for example alternate key names, list-vs-dict regrouping, wrapper payloads, or cursor_index vs cursor style mismatches), use "needs_work" unless the exact required external shape is directly evidenced.
+- If recent evidence suggests suspicious schema drift (for example alternate key names, list-vs-dict regrouping, wrapper payloads, cursor_index vs cursor, or user-example \`action\` fields versus implementation \`type\` fields), use "needs_work" unless the exact required external shape is directly evidenced.
 - Do NOT invent exact field names from ambiguous prose alone. For example, wording like "track cursor index, line, column" does not by itself prove whether the output keys must be \`cursor\`, \`cursor_index\`, \`cursor_line\`, \`column\`, etc. When exact names are not directly evidenced by the outcome, examples, tests, or raw tool output, ask for raw output verification instead of prescribing invented keys.
 - If the item is about invalid behavior, require direct evidence for the specific risky operation named in the item, not only generic malformed JSON / unknown-op checks.
+- If a verification script itself fails with a syntax/quoting/tool error, treat that as missing evidence; ask for a smaller checked script or saved temporary script rather than accepting the failed attempt.
 - The message should tell the coding agent exactly what to verify/fix for this checklist item, including which command/fixture/output to show when possible. When schema names are ambiguous, ask to show the raw output/state and compare it to the task wording rather than asserting exact invented keys.
+- When this checklist item is "Self-critique review" (critical-review), any CLAIM / EVIDENCE WARNINGS in the prompt are direct proof that the self-critique was insufficient. Mark "needs_work" and reference the specific warning(s) that remain unaddressed.
 - No prose outside JSON.`;
+
+function formatCriticalReviewWarningMessage(evidenceWarnings: string[]): string {
+  return `Self-critique review cannot pass while CLAIM / EVIDENCE WARNINGS remain. Address these warnings with direct evidence: ${evidenceWarnings.join("; ")}`;
+}
 
 /** Built-in fallback system prompt (default, used when no model-specific match). */
 const BUILTIN_SYSTEM_PROMPT = `You are a supervisor monitoring a coding AI assistant conversation.
@@ -582,6 +592,15 @@ export async function reviewChecklistItem(
   rawArtifactExcerpts: string[] = [],
   debug?: SupervisorPayloadDebugOptions,
 ): Promise<ChecklistReviewDecision> {
+  if (item.id === "critical-review" && evidenceWarnings.length > 0) {
+    return {
+      status: "needs_work",
+      message: formatCriticalReviewWarningMessage(evidenceWarnings),
+      reasoning: "Self-critique review cannot pass while claim/evidence warnings remain unaddressed.",
+      confidence: 1,
+    };
+  }
+
   const conversationText = snapshot.length === 0
     ? "(No conversation yet)"
     : snapshot.map((m) => `${m.role === "user" ? "USER" : "ASSISTANT"}: ${m.content}`).join("\n\n---\n\n");
@@ -594,7 +613,7 @@ export async function reviewChecklistItem(
   const rawArtifactsSection = rawArtifactExcerpts.length === 0
     ? ""
     : `\nRAW TOOL OUTPUT EXCERPTS:\n${rawArtifactExcerpts.map((excerpt, index) => `[${index + 1}] ${excerpt}`).join("\n\n")}`;
-  const userPrompt = `DESIRED OUTCOME:\n${outcome}\n\nCHECKLIST ITEM:\nTitle: ${item.title}\nDescription: ${item.description}\nVerification guidance: ${item.verificationPrompt}\nAttempts so far: ${item.attempts}\n\nRECENT CONVERSATION:\n${conversationText}\n\n${evidenceSection}${warningsSection}${rawArtifactsSection}\n\nIs this checklist item clearly satisfied? If not, tell the coding agent exactly what to re-check/fix before finishing.`;
+  const userPrompt = `DESIRED OUTCOME:\n${outcome}\n\nCHECKLIST ITEM:\nTitle: ${item.title}\nDescription: ${item.description}\nVerification guidance: ${item.verificationPrompt}\nAttempts so far: ${item.attempts}\n\nRECENT CONVERSATION:\n${conversationText}\n\n${evidenceSection}${warningsSection}${rawArtifactsSection}\n\nReview the evidence above. List any unverified requirements, missing direct evidence, or contradictions. Only mark "passed" if every concrete claim is backed by tool output, CLI traces, or exact raw output. If evidence is missing, suspicious, or the assistant has only claimed success without showing it, return "needs_work" and specify exactly what evidence to produce next.`;
   const text = await callModel(ctx, provider, modelId, CHECKLIST_REVIEW_SYSTEM_PROMPT, userPrompt, undefined, undefined, debug);
   if (text === null) {
     return {

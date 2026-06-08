@@ -25,10 +25,32 @@ describe("buildEvidenceItem", () => {
     expect(item?.summary).toContain("TESTS: passed=52 total=52");
   });
 
-  it("classifies python import checks as import-surface verification", () => {
+  it("classifies Python import checks as import-surface verification", () => {
     const item = buildEvidenceItem(
       "bash",
-      { command: "python -c \"from pet_polyglot import parse_js_window_assignment\"" },
+      { command: "python -c \"from example_package import public_function\"" },
+      [{ type: "text", text: "ok" }],
+      false,
+    );
+
+    expect(item?.category).toBe("imports");
+  });
+
+  it("classifies Python 3 import checks as import-surface verification", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "python3 -c \"from example_package import public_function\"" },
+      [{ type: "text", text: "ok" }],
+      false,
+    );
+
+    expect(item?.category).toBe("imports");
+  });
+
+  it("classifies Node require checks as import-surface verification", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "node -e \"require('./dist/index.js')\"" },
       [{ type: "text", text: "ok" }],
       false,
     );
@@ -58,10 +80,21 @@ describe("buildEvidenceItem", () => {
     expect(item?.category).toBe("cli");
   });
 
+  it("classifies language runtime module execution as cli evidence", () => {
+    const item = buildEvidenceItem(
+      "bash",
+      { command: "python3 -m example_package '{\"action\":\"run\",\"args\":{}}'" },
+      [{ type: "text", text: '{"ok":true}' }],
+      false,
+    );
+
+    expect(item?.category).toBe("cli");
+  });
+
   it("detects top-level result wrappers in CLI/stdout examples", () => {
     const item = buildEvidenceItem(
       "bash",
-      { command: "python -m pet_polyglot '{\"op\":\"parse_markdown_front_matter\",\"args\":{\"text\":\"x\"}}'" },
+      { command: "python -m example_package '{\"action\":\"parse\",\"args\":{\"text\":\"x\"}}'" },
       [{ type: "text", text: '{"result":{"metadata":{},"body":"x"}}' }],
       false,
     );
@@ -73,16 +106,16 @@ describe("buildEvidenceItem", () => {
   it("captures generic line-count evidence", () => {
     const item = buildEvidenceItem(
       "bash",
-      { command: "wc -l pet_polyglot/*.py tests/test_all.py run_tests.py" },
-      [{ type: "text", text: "382 pet_polyglot/analyzer.py\n811 tests/test_all.py\n26 run_tests.py\n" }],
+      { command: "wc -l src/analyzer.ts tests/test_all.ts scripts/run-tests.ts" },
+      [{ type: "text", text: "382 src/analyzer.ts\n811 tests/test_all.ts\n26 scripts/run-tests.ts\n" }],
       false,
     );
 
     expect(item?.maxLineCount).toBe(811);
     expect(item?.lineCounts).toEqual(
       expect.arrayContaining([
-        { path: "pet_polyglot/analyzer.py", count: 382 },
-        { path: "tests/test_all.py", count: 811 },
+        { path: "src/analyzer.ts", count: 382 },
+        { path: "tests/test_all.ts", count: 811 },
       ]),
     );
   });
@@ -101,7 +134,7 @@ describe("collectEvidenceFromBranch", () => {
               type: "toolCall",
               id: "call_1",
               name: "bash",
-              arguments: { command: "python -m pet_polyglot '{\"op\":\"simulate_editor\",\"args\":{}}'" },
+              arguments: { command: "node ./bin/tool.js '{\"action\":\"simulate\",\"args\":{}}'" },
             },
           ],
         },
@@ -121,7 +154,7 @@ describe("collectEvidenceFromBranch", () => {
     const evidence = collectEvidenceFromBranch(branch);
     expect(evidence).toHaveLength(1);
     expect(evidence[0]?.category).toBe("cli");
-    expect(evidence[0]?.summary).toContain("python -m pet_polyglot");
+    expect(evidence[0]?.summary).toContain("node ./bin/tool.js");
   });
 });
 
@@ -174,7 +207,7 @@ describe("evidence snapshots", () => {
         timestamp: "2026-01-02T00:00:00.000Z",
         message: {
           role: "assistant",
-          content: [{ type: "toolCall", id: "call_new", name: "bash", arguments: { command: "python -m pet_polyglot '{}'" } }],
+          content: [{ type: "toolCall", id: "call_new", name: "bash", arguments: { command: "node ./bin/tool.js '{}'" } }],
         },
       },
       {
@@ -208,6 +241,28 @@ describe("evidence snapshots", () => {
     expect(loadEvidenceSnapshotFromBranch(branch)).toEqual([
       { toolName: "bash", category: "cli", summary: "new", isError: false },
     ]);
+  });
+
+  it("keeps enough recent evidence to avoid losing satisfied public-surface checks during long checklist runs", () => {
+    const tracker = new SupervisorEvidenceTracker();
+
+    tracker.recordToolResult({
+      toolName: "bash",
+      input: { command: "python3 -c \"from example_package import public_function\"" },
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+    } as any);
+
+    for (let i = 0; i < 25; i += 1) {
+      tracker.recordToolResult({
+        toolName: "bash",
+        input: { command: `python run_tests.py # ${i}` },
+        content: [{ type: "text", text: "TESTS: passed=52 total=52" }],
+        isError: false,
+      } as any);
+    }
+
+    expect(tracker.getRecent().some((item) => item.category === "imports")).toBe(true);
   });
 
   it("hydrates from persisted snapshot plus branch evidence without duplicating items", () => {

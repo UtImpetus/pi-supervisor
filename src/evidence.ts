@@ -43,7 +43,7 @@ export interface SupervisorEvidenceNote {
   };
 }
 
-const DEFAULT_MAX_EVIDENCE_ITEMS = 12;
+const DEFAULT_MAX_EVIDENCE_ITEMS = 40;
 const MAX_SUMMARY_LEN = 120;
 const MAX_EXCERPT_LEN = 140;
 const MAX_NOTE_WARNINGS = 3;
@@ -135,7 +135,7 @@ function classifyBashCommand(command: string, excerpt: string): EvidenceCategory
   }
 
   if (
-    /python\s+-c\s+.*\bimport\b|python\s+-c\s+.*\bfrom\b.+\bimport\b|node\s+-e\s+.*\brequire\(|node\s+-e\s+.*\bimport\s|bun\s+-e\s+.*\bimport\s|deno\s+eval\s+.*\bimport\s|ruby\s+-e\s+.*\brequire\b|php\s+-r\s+.*\b(require|include)(_once)?\b|perl\s+-e\s+.*\b(use|require)\b/.test(lower)
+    /python(?:3(?:\.\d+)?)?\s+-c\s+.*\bimport\b|python(?:3(?:\.\d+)?)?\s+-c\s+.*\bfrom\b.+\bimport\b|node\s+-e\s+.*\brequire\(|node\s+-e\s+.*\bimport\s|bun\s+-e\s+.*\bimport\s|deno\s+eval\s+.*\bimport\s|ruby\s+-e\s+.*\brequire\b|php\s+-r\s+.*\b(require|include)(_once)?\b|perl\s+-e\s+.*\b(use|require)\b/.test(lower)
   ) {
     return "imports";
   }
@@ -147,7 +147,7 @@ function classifyBashCommand(command: string, excerpt: string): EvidenceCategory
   }
 
   if (
-    /python\s+-m\s+|node\s+|deno\s+run\s+|cargo\s+run\b|go\s+run\b|npm\s+run\b|pnpm\s+run\b|yarn\s+|bun\s+run\b|uv\s+run\b|poetry\s+run\b|pipx\s+run\b|java\s+-jar\b|dotnet\s+run\b|php\s+\S|ruby\s+\S|perl\s+\S|bash\s+\S|sh\s+\S|zsh\s+\S|fish\s+\S|pwsh\b|powershell\b|cmd\s+\/c\b|npx\b|pnpx\b|docker\s+(run|exec)\b|kubectl\s+exec\b|make\s+(run|start|demo|serve)\b|just\s+(run|start|demo|serve)\b|(^|\s)\.\/?\S+\.(sh|py|js|ts|tsx|mjs|cjs)(\s|$)|(^|\s)\.\/\S+(\s|$)|\bcli\b|\bentrypoint\b|\bentry point\b/.test(lower)
+    /python(?:3(?:\.\d+)?)?\s+-m\s+|node\s+|deno\s+run\s+|cargo\s+run\b|go\s+run\b|npm\s+run\b|pnpm\s+run\b|yarn\s+|bun\s+run\b|uv\s+run\b|poetry\s+run\b|pipx\s+run\b|java\s+-jar\b|dotnet\s+run\b|php\s+\S|ruby\s+\S|perl\s+\S|bash\s+\S|sh\s+\S|zsh\s+\S|fish\s+\S|pwsh\b|powershell\b|cmd\s+\/c\b|npx\b|pnpx\b|docker\s+(run|exec)\b|kubectl\s+exec\b|make\s+(run|start|demo|serve)\b|just\s+(run|start|demo|serve)\b|(^|\s)\.\/?\S+\.(sh|py|js|ts|tsx|mjs|cjs)(\s|$)|(^|\s)\.\/\S+(\s|$)|\bcli\b|\bentrypoint\b|\bentry point\b/.test(lower)
   ) {
     return "cli";
   }
@@ -318,7 +318,7 @@ function outcomeNeedsPublicApiVerification(outcome: string): boolean {
 
 function outcomeNeedsCliVerification(outcome: string): boolean {
   const lower = outcome.toLowerCase();
-  return /\bcli\b|python -m|entry point|request format|print compact json|single-file mode|package mode/.test(lower);
+  return /\bcli\b|entry point|entrypoint|request format|stdout|stderr|exit code|command line|single-file mode|package mode|python(?:3)? -m|node |npm run|pnpm run|yarn |bun run|deno run|cargo run|go run|java -jar|dotnet run|docker run|kubectl exec|\.\/\S+/.test(lower);
 }
 
 function outcomeNeedsInvalidVerification(outcome: string): boolean {

@@ -4,12 +4,13 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-  PREDEFINED_CHECKS,
   type CompletionChecklist,
   type CompletionChecklistItem,
+  PREDEFINED_CHECKS,
   type PredefinedCheckId,
   type Sensitivity,
   type SensitivityConfig,
+  type SupervisorHardConstraint,
   type SupervisorIntervention,
   type SupervisorPreferences,
   type SupervisorState,
@@ -62,6 +63,8 @@ export class SupervisorStateManager {
             items: [],
           }
         : undefined,
+      hardConstraints: [],
+      recovery: { blockedToolCalls: 0, repeatedFailures: 0 },
     };
     this.preferences = {
       ...this.preferences,
@@ -106,6 +109,33 @@ export class SupervisorStateManager {
   addIntervention(intervention: SupervisorIntervention): void {
     if (!this.state) return;
     this.state.interventions.push(intervention);
+    this.persistState();
+  }
+
+  setHardConstraints(constraints: SupervisorHardConstraint[]): void {
+    if (!this.state) return;
+    this.state.hardConstraints = constraints;
+    this.persistState();
+  }
+
+  recordBlockedToolCall(): void {
+    if (!this.state) return;
+    this.state.recovery = this.state.recovery ?? { blockedToolCalls: 0, repeatedFailures: 0 };
+    this.state.recovery.blockedToolCalls += 1;
+    this.persistState();
+  }
+
+  recordRepeatedFailure(): void {
+    if (!this.state) return;
+    this.state.recovery = this.state.recovery ?? { blockedToolCalls: 0, repeatedFailures: 0 };
+    this.state.recovery.repeatedFailures += 1;
+    this.persistState();
+  }
+
+  markRecoverySent(): void {
+    if (!this.state) return;
+    this.state.recovery = this.state.recovery ?? { blockedToolCalls: 0, repeatedFailures: 0 };
+    this.state.recovery.lastRecoveryAt = Date.now();
     this.persistState();
   }
 
@@ -317,6 +347,10 @@ export class SupervisorStateManager {
       const customEntry = entry as any;
       if (!foundState && customEntry.customType === STATE_ENTRY_TYPE) {
         this.state = customEntry.data as SupervisorState;
+        if (this.state.active) {
+          this.state.hardConstraints = this.state.hardConstraints ?? [];
+          this.state.recovery = this.state.recovery ?? { blockedToolCalls: 0, repeatedFailures: 0 };
+        }
         foundState = true;
       }
 

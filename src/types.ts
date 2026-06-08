@@ -32,7 +32,7 @@ export const PREDEFINED_CHECKS: readonly PredefinedCheck[] = [
     description:
       "Re-examine your changes for obvious errors, missed requirements, or regressions before finishing.",
     verificationPrompt:
-      "Re-read the full diff of your changes. Check for typos, missed edge cases, unintended file modifications, and ensure the implementation matches the stated goal.",
+      "Re-read the full diff of your changes. Check for typos, missed edge cases, unintended file modifications, and ensure the implementation matches the stated goal. Treat any unaddressed CLAIM / EVIDENCE WARNINGS in the prompt as proof that requirements are still unverified. If there are warnings about missing CLI verification, untested error cases, or unproven public API behavior, this item fails. List every warning that is still open and tell the agent to run the exact command or test that would resolve it.",
   },
   {
     id: "code-smells",
@@ -40,7 +40,7 @@ export const PREDEFINED_CHECKS: readonly PredefinedCheck[] = [
     description:
       "Remove obvious code smells introduced or left behind: dead code, duplicated logic, unclear names, missing error handling.",
     verificationPrompt:
-      "Scan your changes for unused variables, duplicated logic, hardcoded values, poorly named functions, and missing error handling. Clean up anything you find.",
+      "Examine recent code and tool output for obvious quality issues: unused variables, duplicated logic, hardcoded values, unclear names, or missing error handling. Also check whether the agent added dead code during recent fixes. Be specific: cite filename and line number when you flag something. If you see any issue, return needs_work with the exact location and fix required.",
   },
 ];
 
@@ -147,6 +147,19 @@ export function detectSensitivityPreset(config: SensitivityConfig): Exclude<Sens
 }
 
 /** Full supervisor state — persisted to session */
+export interface SupervisorHardConstraint {
+  kind: "forbid-path" | "allow-only-path" | "forbid-git";
+  pattern: string;
+  source: string;
+  createdAt: number;
+}
+
+export interface SupervisorRecoveryState {
+  blockedToolCalls: number;
+  repeatedFailures: number;
+  lastRecoveryAt?: number;
+}
+
 export interface SupervisorState {
   active: boolean;
   outcome: string;
@@ -161,6 +174,8 @@ export interface SupervisorState {
   startedAt: number;
   turnCount: number;
   completionChecklist?: CompletionChecklist;
+  hardConstraints?: SupervisorHardConstraint[];
+  recovery?: SupervisorRecoveryState;
 }
 
 /** Persisted supervisor defaults/preferences used when supervision is inactive. */

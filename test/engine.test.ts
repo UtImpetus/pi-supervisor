@@ -11,7 +11,9 @@ import {
   formatChecklistForPrompt,
   loadSystemPrompt,
   mergePredefinedChecks,
+  reviewChecklistItem,
 } from "../src/engine.js";
+import { PREDEFINED_CHECKS } from "../src/types.js";
 
 // Build a minimal ExtensionContext that only exposes the bits engine.ts touches.
 function makeCtx(branch: any[]): any {
@@ -235,17 +237,54 @@ describe("checklist prompts", () => {
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("feeds, posts, replies, timestamps");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("ANSI/terminal rendering");
     expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("operation-specific invalid behavior");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("event keys like `action` versus `type`");
+    expect(CHECKLIST_BOOTSTRAP_SYSTEM_PROMPT).toContain("newly added failing test is discovered");
   });
 
   it("requires exact evidence for checklist review instead of shallow proof", () => {
-    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Assistant claims and self-authored tests are not sufficient");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Assistant claims, summary tables, and self-authored tests are not sufficient");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Function existence, minimal-argument smoke checks, and rough return-type checks are NOT enough");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("schema drift");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("cursor_index vs cursor");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("user-example `action` fields versus implementation `type` fields");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("Do NOT invent exact field names from ambiguous prose alone");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("track cursor index, line, column");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("ask for raw output verification instead of prescribing invented keys");
     expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("not only generic malformed JSON / unknown-op checks");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("raw stdout/stderr, and exit code");
+    expect(CHECKLIST_REVIEW_SYSTEM_PROMPT).toContain("syntax/quoting/tool error");
+  });
+
+  it("preserves diff review guidance for the critical-review predefined check", () => {
+    const criticalReview = PREDEFINED_CHECKS.find((check) => check.id === "critical-review");
+
+    expect(criticalReview?.verificationPrompt).toContain("Re-read the full diff of your changes");
+    expect(criticalReview?.verificationPrompt).toContain("CLAIM / EVIDENCE WARNINGS");
+  });
+
+  it("deterministically fails critical-review when claim/evidence warnings remain", async () => {
+    const review = await reviewChecklistItem(
+      makeCtx([]),
+      "unused-provider",
+      "unused-model",
+      "Add a public CLI",
+      {
+        id: "critical-review",
+        title: "Self-critique review",
+        description: "Re-examine changes.",
+        verificationPrompt: "Review warnings.",
+        status: "pending",
+        attempts: 0,
+      },
+      [],
+      [],
+      ["Recent evidence emphasizes tests, but no real CLI/entrypoint verification is visible."],
+    );
+
+    expect(review.status).toBe("needs_work");
+    expect(review.confidence).toBe(1);
+    expect(review.message).toContain("CLAIM / EVIDENCE WARNINGS");
+    expect(review.message).toContain("no real CLI/entrypoint verification");
   });
 });
 

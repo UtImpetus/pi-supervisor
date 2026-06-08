@@ -19,7 +19,7 @@ const STOP_WORDS = new Set([
   "verify", "exact", "using", "before", "after", "their", "there", "which", "when", "have", "will", "tool",
   "recent", "state", "items", "item", "required", "should", "could", "would", "about", "string", "value",
   "values", "return", "returns", "result", "results", "input", "inputs", "fields", "keys", "field", "line",
-  "column", "index", "text", "body", "metadata", "json", "python", "compact", "stdout", "stderr",
+  "column", "index", "text", "body", "metadata", "json", "compact", "stdout", "stderr",
 ]);
 
 export interface ToolArtifactIndexEntry {
