@@ -183,6 +183,16 @@ export class SupervisorStateManager {
     this.persistState();
   }
 
+  skipCurrentChecklistItem(): void {
+    if (!this.state?.completionChecklist) return;
+    const checklist = this.state.completionChecklist;
+    const item = checklist.items[checklist.currentIndex];
+    if (!item) return;
+    item.status = "skipped";
+    checklist.currentIndex = Math.min(checklist.currentIndex + 1, checklist.items.length);
+    this.persistState();
+  }
+
   incrementCurrentChecklistAttempt(): void {
     if (!this.state?.completionChecklist) return;
     const item = this.state.completionChecklist.items[this.state.completionChecklist.currentIndex];

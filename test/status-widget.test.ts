@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupervisorState } from "../src/types.js";
 import { describePromptSource, setWidgetVisible, updateUI, type WidgetAction } from "../src/ui/status-widget.js";
+import { SUPERVISOR_VERSION_LABEL } from "../src/version.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ describe("status-widget", () => {
   it("line 1 contains Supervising, version, and Goal", () => {
     const lines = captureRender(makeState());
     expect(lines[0]).toContain("Supervising");
-    expect(lines[0]).toContain("v0.5.1");
+    expect(lines[0]).toContain(SUPERVISOR_VERSION_LABEL);
     expect(lines[0]).toContain("Goal:");
     expect(lines[0]).toContain("Refactor auth module");
   });

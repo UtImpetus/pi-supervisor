@@ -77,6 +77,19 @@ function extractThinking(accumulated: string): string {
 // After this many consecutive idle-state steers with no "done", run a lenient final evaluation.
 const MAX_IDLE_STEERS = 5;
 
+// After this many failed review attempts on a single checklist item, skip it
+// instead of looping forever (the stagnation path then finishes the run).
+const MAX_CHECKLIST_ITEM_ATTEMPTS = 3;
+
+// Free-tier / weak supervisor models rarely emit high-confidence verdicts, so an
+// unreachable confidenceThreshold leaves supervision paralyzed. Clamp it down for them.
+const FREE_TIER_MODEL_RE = /(^|[-_/:.])free([-_/:.]|$)/i;
+function clampConfidenceForModel(modelId: string, config: SensitivityConfig): SensitivityConfig {
+  if (!modelId || !FREE_TIER_MODEL_RE.test(modelId)) return config;
+  if (config.confidenceThreshold <= 0.7) return config;
+  return { ...config, confidenceThreshold: 0.7 };
+}
+
 type EditableChecklistItem = Pick<CompletionChecklistItem, "id" | "title" | "description" | "verificationPrompt">;
 
 function slugifyChecklistId(input: string): string {
@@ -609,8 +622,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Apply the configured confidence threshold
-    if (decision.action === "steer" && decision.message && decision.confidence >= config.confidenceThreshold) {
+    // Apply the configured confidence threshold. Free-tier/weak models rarely emit
+    // high-confidence verdicts, so clamp the threshold down at read time (ephemeral —
+    // never persisted into state, so the user's chosen preset survives intact and
+    // mid-run model switches are handled correctly on the next cycle).
+    const effectiveThreshold = clampConfidenceForModel(s.modelId, config).confidenceThreshold;
+    if (decision.action === "steer" && decision.message && decision.confidence >= effectiveThreshold) {
       state.addIntervention({
         turnCount: s.turnCount,
         message: decision.message,
@@ -623,7 +640,11 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  const runChecklistGate = async (ctx: ExtensionContext, s: NonNullable<ReturnType<typeof state.getState>>): Promise<"steer" | "summary" | "complete" | "skip"> => {
+  const runChecklistGate = async (
+    ctx: ExtensionContext,
+    s: NonNullable<ReturnType<typeof state.getState>>,
+    lenient = false,
+  ): Promise<"steer" | "summary" | "complete" | "skip"> => {
     if (s.checklistEnabled === false) return "skip";
 
     const checklist = state.getState()?.completionChecklist;
@@ -633,7 +654,7 @@ export default function (pi: ExtensionAPI) {
       if (!checklist.summaryRequested) {
         state.setChecklistSummaryRequested(true);
         const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
-        await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+        await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.", true);
         return "summary";
       }
       return "complete";
@@ -667,18 +688,29 @@ export default function (pi: ExtensionAPI) {
         if (!updated.completionChecklist?.summaryRequested) {
           state.setChecklistSummaryRequested(true);
           const message = "Completion checklist passed. Give a concise final summary of what was implemented and the validation evidence before we finish.";
-          await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.");
+          await sendChecklistMessage(ctx, state.getState()!, message, "Checklist complete; request final summary.", true);
           return "summary";
         }
         return "complete";
       }
 
       const message = `Checklist check (${nextItem.title}): ${nextItem.verificationPrompt}`;
-      await sendChecklistMessage(ctx, state.getState()!, message, `Checklist item passed; moving to next check. ${review.reasoning}`.trim());
+      await sendChecklistMessage(ctx, state.getState()!, message, `Checklist item passed; moving to next check. ${review.reasoning}`.trim(), true);
       return "steer";
     }
 
     state.incrementCurrentChecklistAttempt();
+    // Avoid an infinite loop on a single stubborn item: when the run is stagnating
+    // or the per-item attempt budget is exhausted, skip the item and keep going.
+    // (item is a live reference into state, already mutated by the increment above.)
+    const willSkip = lenient || item.attempts >= MAX_CHECKLIST_ITEM_ATTEMPTS;
+    if (willSkip) {
+      state.skipCurrentChecklistItem();
+      const message = `Checklist item "${item.title}" could not be verified after ${item.attempts} attempt(s); skipping it to avoid an infinite loop. Summarize what is done and finish.`;
+      await sendChecklistMessage(ctx, state.getState()!, message, review.reasoning || `Checklist item skipped: ${item.title}`);
+      return "steer";
+    }
+
     const message = review.message?.trim() || `Checklist check (${item.title}): ${item.verificationPrompt}`;
     await sendChecklistMessage(ctx, state.getState()!, message, review.reasoning || `Checklist item requires more verification: ${item.title}`);
     return "steer";
@@ -741,7 +773,7 @@ export default function (pi: ExtensionAPI) {
       updateUI(ctx, state.getState(), { type: "steering", message: decision.message });
       scheduleSupervisorIdleMessage(ctx, decision.message);
     } else if (decision.action === "done") {
-      const checklistResult = await runChecklistGate(ctx, s);
+      const checklistResult = await runChecklistGate(ctx, s, stagnating);
       if (checklistResult === "steer" || checklistResult === "summary") {
         return;
       }
@@ -749,7 +781,12 @@ export default function (pi: ExtensionAPI) {
       idleSteers = 0;
       labelCurrentLeaf(ctx, formatSupervisorCheckpointLabel("done", s.turnCount));
       updateUI(ctx, state.getState(), { type: "done" });
-      const suffix = stagnating ? ` (stopped after ${MAX_IDLE_STEERS} steering attempts — goal substantially achieved)` : "";
+      const checklist = state.getState()?.completionChecklist;
+      const skipped = checklist?.items?.filter((item) => item.status === "skipped").length ?? 0;
+      const skippedNote = skipped > 0 ? ` · ${skipped} check${skipped === 1 ? "" : "s"} skipped (unverified)` : "";
+      const suffix = stagnating
+        ? ` (stopped after ${MAX_IDLE_STEERS} steering attempts — goal substantially achieved)${skippedNote}`
+        : skippedNote ? ` (${skippedNote.replace(/^ · /, "")})` : "";
       ctx.ui.notify(`Supervisor: outcome achieved! "${s.outcome}"${suffix}`, "info");
       stopSupervision();
       updateUI(ctx, state.getState());
@@ -1090,7 +1127,9 @@ export default function (pi: ExtensionAPI) {
     if (checklist.status === "failed") return " | checks: fallback";
     if (checklist.status === "pending") return " | checks: setting up";
     const passed = checklist.items.filter((item) => item.status === "passed").length;
-    return ` | checks: ${passed}/${checklist.count}`;
+    const skipped = checklist.items.filter((item) => item.status === "skipped").length;
+    const skippedPart = skipped > 0 ? `, ${skipped} skipped` : "";
+    return ` | checks: ${passed}${skippedPart}/${checklist.count}`;
   };
 
   const getCurrentChecklistItem = () => {
@@ -1104,8 +1143,16 @@ export default function (pi: ExtensionAPI) {
     s: NonNullable<ReturnType<typeof state.getState>>,
     message: string,
     reasoning: string,
+    progress = false,
   ) => {
-    idleSteers++;
+    // Forward checklist progress (an item passed, or all items resolved) is NOT
+    // stagnation: reset the counter so long healthy checklists don't trip the
+    // lenient/skip path before later items get their full attempt budget.
+    if (progress) {
+      idleSteers = 0;
+    } else {
+      idleSteers++;
+    }
     state.addIntervention({
       turnCount: s.turnCount,
       message,

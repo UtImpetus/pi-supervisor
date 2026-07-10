@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-07-10
+
+### Fixed
+- Hard-constraint extraction no longer creates `forbid-path` constraints from non-path words (e.g. the adjective "arbitrary" in "do not read or write arbitrary ... paths"), which previously blocked legitimate tool calls. Bare filenames such as `package.json` and `CHANGELOG.md` are still recognized as paths.
+- `pathMatches` no longer falsely matches a constraint pattern against the project root, which had blocked every `cd <project-root>; ...` command — including the CLI verification the supervisor's own checklist required — and caused non-converging steering loops.
+- The checklist gate can no longer loop forever on a single stubborn item: after `MAX_CHECKLIST_ITEM_ATTEMPTS` (3) failed reviews the item is marked `skipped` and the gate advances. Skipped items are now surfaced in the completion notice and status label instead of an unverified outcome being silently reported as "achieved".
+- Forward checklist progress (an item passing) now resets the idle-stagnation counter, so long healthy checklists no longer trip lenient skipping of later items before they get their full attempt budget.
+
+### Changed
+- Free-tier supervisor models (model id containing a `free` token) get a clamped mid-turn confidence threshold (≤0.7) applied at read time, so weak models are not paralyzed by an otherwise-unreachable threshold. The clamp never overwrites the user's chosen sensitivity preset.
+
 ## [0.5.1] - 2026-05-26
 
 ### Fixed

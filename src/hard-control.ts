@@ -30,6 +30,24 @@ function stripQuotes(value: string): string {
   return stripped.endsWith(".") ? stripped.slice(0, -1) : stripped;
 }
 
+function looksLikePathFragment(token: string): boolean {
+  const t = token.trim();
+  if (!t) return false;
+  // Reject bare words that are not filesystem paths (e.g. "arbitrary",
+  // "user-provided", "filesystem"). A genuine path fragment contains a separator,
+  // is an absolute/drive path, a relative dot-path, or carries a file extension.
+  return (
+    t.includes("/") ||
+    t.includes("\\" ) ||
+    t.startsWith("./") ||
+    t.startsWith("../") ||
+    t === "." ||
+    t === ".." ||
+    /^[A-Za-z]:[\\/]/.test(t) ||
+    /\.[A-Za-z0-9]{1,8}$/.test(t)
+  );
+}
+
 function uniqueConstraints(constraints: SupervisorHardConstraint[]): SupervisorHardConstraint[] {
   const seen = new Set<string>();
   const result: SupervisorHardConstraint[] = [];
@@ -60,13 +78,13 @@ export function extractHardConstraints(text: string, now = Date.now()): Supervis
   if (/\bdo not\b|\bdon't\b|\bnever\b|\bstop\b|\bforbid/.test(lower)) {
     for (const match of source.matchAll(/(?:do not|don't|never|stop|forbid(?:den)?)(?:\s+\w+){0,4}\s+(?:touch|edit|modify|write(?:\s+to)?|change|open|read)\s+([`'"]?\S+(?:[\\/]\S*)?)/gi)) {
       const raw = match[1]?.trim();
-      if (raw) constraints.push(makeConstraint("forbid-path", raw, source, now));
+      if (raw && looksLikePathFragment(raw)) constraints.push(makeConstraint("forbid-path", raw, source, now));
     }
   }
 
   for (const match of source.matchAll(/(?:only|exclusively)\s+(?:edit|touch|modify|change|work\s+in|work\s+on)\s+([`'"]?\S+(?:[\\/]\S*)?)/gi)) {
     const raw = match[1]?.trim();
-    if (raw) constraints.push(makeConstraint("allow-only-path", raw, source, now));
+    if (raw && looksLikePathFragment(raw)) constraints.push(makeConstraint("allow-only-path", raw, source, now));
   }
 
   if (/do not .*\bgit\s+(stash|checkout|reset|clean|restore)|don't .*\bgit\s+(stash|checkout|reset|clean|restore)|no more .*\bgit\s+(stash|checkout|reset|clean|restore)/i.test(source)) {
@@ -94,7 +112,12 @@ function pathMatches(candidate: string, pattern: string, cwd: string): boolean {
   const normalizedCandidate = normalizePathFragment(candidate);
   const normalizedPattern = normalizePathFragment(pattern);
   if (normalizedCandidate.includes(normalizedPattern) || normalizedPattern.includes(normalizedCandidate)) return true;
-  return pathWithin(candidate, pattern, cwd) || pathWithin(pattern, candidate, cwd);
+  // Only check whether the tool's path falls within a real directory constraint.
+  // The reversed check (pattern resolved relative to cwd) is intentionally omitted:
+  // it falsely matches any constraint because the pattern resolves to <cwd>/<pattern>,
+  // which is trivially inside the project root that most tool calls operate within
+  // (e.g. a bad extraction like "arbitrary" would block every `cd <project-root>` call).
+  return pathWithin(candidate, pattern, cwd);
 }
 
 function extractToolPaths(toolName: string, input: Record<string, unknown>): string[] {

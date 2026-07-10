@@ -61,7 +61,7 @@ export interface CompletionChecklistItem {
   title: string;
   description: string;
   verificationPrompt: string;
-  status: "pending" | "passed";
+  status: "pending" | "passed" | "skipped";
   attempts: number;
 }
 
